@@ -9,7 +9,10 @@ const SESSION_SECONDS = 3600
 
 const unauthenticated = () => new ProtocolError('UNAUTHENTICATED', 'missing or expired session')
 
-/** Proof of key ownership for mailboxes and wallet recovery. State is held in memory. */
+/**
+ * Proof of key ownership for mailboxes and wallet recovery. Held in memory on purpose:
+ * sessions are short, and a client simply signs a new challenge after a restart.
+ */
 export class Sessions {
   private readonly challenges = new Map<string, { key: Key; expires: number }>()
   private readonly sessions = new Map<string, { key: Key; expires: number }>()
@@ -20,7 +23,15 @@ export class Sessions {
     return this.clock().getTime() + seconds * 1000
   }
 
+  private sweep(): void {
+    const now = this.clock().getTime()
+    for (const entries of [this.challenges, this.sessions]) {
+      for (const [id, { expires }] of entries) if (expires <= now) entries.delete(id)
+    }
+  }
+
   challenge(key: Key): { challenge: string } {
+    this.sweep()
     const challenge = encodeBase64Url(randomBytes(CHALLENGE_BYTES))
     this.challenges.set(challenge, { key, expires: this.later(CHALLENGE_SECONDS) })
     return { challenge }

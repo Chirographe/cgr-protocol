@@ -222,7 +222,7 @@ Every step is idempotent, so a failed commit is resumed by running it again.
 - The guardian keeps the full token for each `state_hash`, and an index `token_id → n, state_hash, sequence, here, group`. A token is `here` if the guardian belongs to `state.guardian`.
 - A guardian belongs to a group under any of its past or present keys, and its `url` in the group must be its own.
 - Replaying a recorded state returns the stored token without a new line.
-- At startup, the guardian recomputes `root` and compares it to the last published head. On mismatch it stops signing, serves reads, and sets `locked: true`.
+- At startup, the guardian checks the signature of the last published head, and recomputes `root` over its first `n` lines. One more line than `n` is a crash before publication: the guardian finishes that operation and publishes the head. On any other mismatch it stops signing, serves reads, and sets `locked: true`.
 
 | Route | Rule |
 | --- | --- |

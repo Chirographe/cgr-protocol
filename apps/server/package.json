@@ -1,0 +1,25 @@
+{
+  "name": "@chirographe/server-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs a guardian or a witness on SQLite",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "guardian": "tsx src/guardian.ts",
+    "guardian:rotate": "tsx src/guardian.ts rotate",
+    "witness": "tsx src/witness.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@chirographe/server": "workspace:*",
+    "@chirographe/storage-sqlite": "workspace:*",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}
