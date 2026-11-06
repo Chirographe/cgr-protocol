@@ -8,11 +8,14 @@ import {
   composeProposal,
   composeToken,
   createToken,
+  checkLedger,
   generateSigner,
   hashLine,
   hashOf,
+  headMessage,
   hashToBytes,
   ledgerRoot,
+  verifySignature,
   memoryKeyring,
   signersForState,
   soleOwner,
@@ -22,6 +25,7 @@ import {
   type Policy,
   type Token,
   type Wallet,
+  type Head,
 } from '../src/index.ts'
 import { Network, directAddress, groupOf, guardians, mint, newWallet } from './network.ts'
 
@@ -233,6 +237,164 @@ describe('integrity', () => {
     expect((await reopened.head()).locked).toBe(true)
     await expect(reopened.create(token)).rejects.toMatchObject({ code: 'LEDGER_LOCKED' })
     expect((await reopened.lines(1, 1)).length).toBe(1)
+  })
+
+  describe('after a crash', () => {
+    const newToken = async (guardian: Guardian) => {
+      const signer = generateSigner()
+      return composeToken({
+        owner: soleOwner(signer.key),
+        signers: [signer],
+        subject: 'x',
+        guardian: groupOf([guardian], 1),
+      })
+    }
+
+    /** Runs `work` with the power going out right after the line is committed. */
+    const crashBeforeHead = async (store: MemoryGuardianStore, work: () => Promise<unknown>) => {
+      const { publishHead } = store
+      store.publishHead = () => Promise.reject(new Error('power cut'))
+      await expect(work()).rejects.toThrow('power cut')
+      store.publishHead = publishHead
+    }
+
+    it('publishes the head it never got to publish', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      const token = await newToken(guardian)
+      await crashBeforeHead(store, () => guardian.create(token))
+      expect((await store.publishedHead())?.n).toBe(0)
+
+      const restarted = await open(store, keyring)
+      expect(restarted.locked).toBe(false)
+      const head = await restarted.head()
+      expect(head.n).toBe(1)
+      expect(head.root).toBe(ledgerRoot((await restarted.lines(1, 10)).map(hashLine)))
+      expect(verifySignature(restarted.key, head.signature, headMessage(head.n, head.root))).toBe(
+        true,
+      )
+    })
+
+    it('answers the client that retries, without a new line', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      const token = await newToken(guardian)
+      await crashBeforeHead(store, () => guardian.create(token))
+
+      const restarted = await open(store, keyring)
+      const retried = await restarted.create(token)
+      expect(retried.signatures.guardians).toHaveLength(1)
+      expect((await restarted.head()).n).toBe(1)
+    })
+
+    it('keeps working once it has restarted', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
+
+      const restarted = await open(store, keyring)
+      await restarted.create(await newToken(restarted))
+      expect((await restarted.head()).n).toBe(2)
+      expect((await open(store, keyring)).locked).toBe(false)
+    })
+
+    it('locks itself with more lines than one operation writes', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
+      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
+      expect((await open(store, keyring)).locked).toBe(true)
+    })
+
+    it('still locks itself when an older line was rewritten', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      await guardian.create(await newToken(guardian))
+      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
+      store.tamper(1, { state_hash: hashOf('forged') })
+      expect((await open(store, keyring)).locked).toBe(true)
+    })
+
+    it('locks itself when lines are missing', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      await guardian.create(await newToken(guardian))
+      Object.assign(store, {
+        data: { ...(store as unknown as { data: object }).data, lines: [] },
+      })
+      expect((await open(store, keyring)).locked).toBe(true)
+    })
+
+    it('finishes a rotation cut before the new key was activated', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      const old = guardian.key
+      const { activate } = keyring
+      keyring.activate = () => Promise.reject(new Error('power cut'))
+      await expect(guardian.rotate()).rejects.toThrow('power cut')
+      keyring.activate = activate
+
+      const restarted = await open(store, keyring)
+      expect(restarted.locked).toBe(false)
+      expect(restarted.key).not.toBe(old)
+      const status = await checkLedger(restarted, old, null)
+      expect(status).toMatchObject({ ok: true, key: restarted.key })
+    })
+
+    it('finishes a rotation cut after the new key was activated', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      const old = guardian.key
+      await crashBeforeHead(store, () => guardian.rotate())
+
+      const restarted = await open(store, keyring)
+      expect(restarted.locked).toBe(false)
+      expect(await checkLedger(restarted, old, null)).toMatchObject({ ok: true })
+    })
+
+    it('locks itself when the key of a rotation is lost', async () => {
+      const store = new MemoryGuardianStore()
+      const keyring = memoryKeyring()
+      const guardian = await open(store, keyring)
+      const { activate } = keyring
+      keyring.activate = () => Promise.reject(new Error('power cut'))
+      await expect(guardian.rotate()).rejects.toThrow('power cut')
+      keyring.activate = activate
+      keyring.pending = () => Promise.resolve(null)
+      expect((await open(store, keyring)).locked).toBe(true)
+    })
+  })
+
+  it('locks itself when ledger and head were rewritten together', async () => {
+    const store = new MemoryGuardianStore()
+    const keyring = memoryKeyring()
+    const guardian = await open(store, keyring)
+    const signer = generateSigner()
+    await guardian.create(
+      await composeToken({
+        owner: soleOwner(signer.key),
+        signers: [signer],
+        subject: 'x',
+        guardian: groupOf([guardian], 1),
+      }),
+    )
+    store.tamper(1, { state_hash: hashOf('forged') })
+    const lines = await store.transaction((tx) => tx.lines(1, 10))
+    const root = ledgerRoot(lines.map(hashLine))
+    const head = await store.publishedHead()
+    await store.publishHead({ ...(head as Head), root })
+
+    const reopened = await open(store, keyring)
+    expect(reopened.locked).toBe(true)
+    expect(await reopened.head()).toMatchObject({ locked: true })
   })
 
   it('locks itself when the published head is gone', async () => {

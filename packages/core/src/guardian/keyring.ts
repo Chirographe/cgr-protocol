@@ -11,16 +11,24 @@ export interface Keyring {
   current(): Signer
   /** Prepares the next key without activating it. May use another algorithm. */
   next(): Promise<Signer>
+  /** The key prepared by `next` and not activated yet. A crash must not lose it. */
+  pending(): Promise<Signer | null>
   activate(signer: Signer): Promise<void>
 }
 
 export function memoryKeyring(algorithm: SignatureAlgorithm = DEFAULT_ALGORITHM): Keyring {
   let signer = generateSigner(algorithm)
+  let prepared: Signer | null = null
   return {
     current: () => signer,
-    next: () => Promise.resolve(generateSigner(algorithm)),
+    next() {
+      prepared = generateSigner(algorithm)
+      return Promise.resolve(prepared)
+    },
+    pending: () => Promise.resolve(prepared),
     activate(next) {
       signer = next
+      prepared = null
       return Promise.resolve()
     },
   }
@@ -130,6 +138,7 @@ export async function sealedKeyring(
       await save(content)
       return signerOf(next)
     },
+    pending: () => Promise.resolve(content.next ? signerOf(content.next) : null),
     async activate(chosen) {
       const { next } = content
       if (next?.key !== chosen.key) throw new Error('this key was not prepared by this keyring')

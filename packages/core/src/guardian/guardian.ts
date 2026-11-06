@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { FORMAT } from '../constants.ts'
 import { ZERO_HASH, hashOf, sameValue, type Hash } from '../crypto/hash.ts'
-import type { Key } from '../crypto/keys.ts'
+import { verifySignature, type Key } from '../crypto/keys.ts'
 import { ProtocolError } from '../errors.ts'
 import {
   consistencyPath,
@@ -9,6 +9,7 @@ import {
   hashLine,
   inclusionPath,
   ledgerRoot,
+  rotationsOf,
 } from '../ledger/line.ts'
 import type { GuardianApi, GuardianInfo } from '../model/api.ts'
 import type { Announcement, Head, Line, LineType, OwnerEntry, TokenHead } from '../model/ledger.ts'
@@ -17,6 +18,7 @@ import {
   parseToken,
   type EntrySignature,
   type GuardianSignature,
+  type Rotation,
   type State,
   type Token,
 } from '../model/token.ts'
@@ -63,6 +65,9 @@ const parseCertificate = (data: unknown) => {
 
 const invalidFormat = (message: string) => new ProtocolError('INVALID_FORMAT', message)
 
+/** An operation writes one line at most, so a crash leaves at most this many unpublished. */
+const MAX_UNPUBLISHED_LINES = 1
+
 /** The trusted third party: keeps a ledger and votes on transitions (section 8). */
 export class Guardian implements GuardianApi {
   readonly url: string
@@ -105,20 +110,51 @@ export class Guardian implements GuardianApi {
 
   // --- Integrity and head ---
 
-  async checkIntegrity(): Promise<Integrity> {
+  private async checkIntegrity(): Promise<void> {
     const lines = await this.store.transaction((tx) => tx.lines(1, Number.MAX_SAFE_INTEGER))
     const head = await this.store.publishedHead()
-    const root = ledgerRoot(lines.map(hashLine))
-    const fraud = findDoubleSpend(lines)
-    let reason: string | null = null
-    if (fraud !== null) reason = `line ${fraud} spends a state twice`
-    else if (!head && lines.length > 0) reason = 'published head missing'
-    else if (head && (head.n !== lines.length || head.root !== root)) {
-      reason = 'ledger does not match the published head'
-    }
+    const unpublished = lines.length > (head?.n ?? 0)
+    const reason =
+      this.mismatch(lines, head) ?? (unpublished ? await this.finishRotation(lines) : null)
     this.integrity = { ok: reason === null, reason }
-    if (reason === null && !head) await this.publish(0, root)
-    return this.integrity
+    if (reason === null && (!head || unpublished)) {
+      await this.publish(lines.length, ledgerRoot(lines.map(hashLine)))
+    }
+  }
+
+  /** Section 8. A line past the head is a crash before publication, not a rewritten ledger. */
+  private mismatch(lines: Line[], head: Head | null): string | null {
+    const fraud = findDoubleSpend(lines)
+    if (fraud !== null) return `line ${fraud} spends a state twice`
+    if (!head) return lines.length > 0 ? 'published head missing' : null
+
+    const keys = rotationsOf(lines).flatMap((rotation) => [rotation.previous, rotation.next])
+    const message = headMessage(head.n, head.root)
+    if (![this.key, ...keys].some((key) => verifySignature(key, head.signature, message))) {
+      return 'published head has an invalid signature'
+    }
+    const unpublished = lines.length - head.n
+    const published = lines.slice(0, head.n).map(hashLine)
+    if (
+      unpublished < 0 ||
+      unpublished > MAX_UNPUBLISHED_LINES ||
+      ledgerRoot(published) !== head.root
+    ) {
+      return 'ledger does not match the published head'
+    }
+    return null
+  }
+
+  /** The crash may have come after a rotation line, and before the switch to its key. */
+  private async finishRotation(lines: Line[]): Promise<string | null> {
+    const last = lines.at(-1)
+    if (last?.type !== 'rotation') return null
+    const { next } = last.origin as Rotation
+    if (next === this.key) return null
+    const pending = await this.keyring.pending()
+    if (pending?.key !== next) return 'the key of the last rotation is lost'
+    await this.keyring.activate(pending)
+    return null
   }
 
   private async publish(n: number, root: Hash): Promise<void> {

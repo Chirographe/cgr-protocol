@@ -36,9 +36,12 @@ describe('sealed keyring', () => {
     const old = keyring.current().key
     const next = await keyring.next()
     expect(keyring.current().key).toBe(old)
-    expect((await sealedKeyring(vault, 'secret', options)).current().key).toBe(old)
+    const restarted = await sealedKeyring(vault, 'secret', options)
+    expect(restarted.current().key).toBe(old)
+    expect((await restarted.pending())?.key).toBe(next.key)
 
     await keyring.activate(next)
+    expect(await keyring.pending()).toBeNull()
     expect(keyring.current().key).toBe(next.key)
     expect((await sealedKeyring(vault, 'secret', options)).current().key).toBe(next.key)
   })

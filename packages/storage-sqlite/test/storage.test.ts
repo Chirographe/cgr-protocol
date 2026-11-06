@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   Guardian,
   MemoryKeyVault,
+  checkLedger,
   composeToken,
   generateWallet,
   hashOf,
@@ -104,6 +105,45 @@ describe('sqlite durability', () => {
     expect(restarted.locked).toBe(false)
     expect(await restarted.head()).toEqual(head)
     expect(await restarted.tokenHead(token.state.token_id)).toMatchObject({ here: true })
+  })
+
+  it('recovers from a crash during a key rotation, across real restarts', async () => {
+    const folder = newFolder()
+    const seal = { cost: 4 }
+    const first = openGuardianStorage(folder)
+    const keyring = await sealedKeyring(first.vault, 'secret', seal)
+    const guardian = await Guardian.open({ name: 'x', url, store: first.guardian, keyring })
+    const old = guardian.key
+    keyring.activate = () => Promise.reject(new Error('power cut'))
+    await expect(guardian.rotate()).rejects.toThrow('power cut')
+    await first.close()
+
+    const second = guardianStorage(folder)
+    const again = await sealedKeyring(second.vault, 'secret', seal)
+    expect(again.current().key).toBe(old)
+    const store = second.guardian
+    const restarted = await Guardian.open({ name: 'x', url, store, keyring: again })
+    expect(restarted.locked).toBe(false)
+    expect(restarted.key).not.toBe(old)
+    expect(await checkLedger(restarted, old, null)).toMatchObject({ ok: true })
+  })
+
+  it('recovers from a crash between a line and its head', async () => {
+    const folder = newFolder()
+    const first = openGuardianStorage(folder)
+    const seal = { cost: 4 }
+    const keyring = await sealedKeyring(first.vault, 'secret', seal)
+    const guardian = await Guardian.open({ name: 'x', url, store: first.guardian, keyring })
+    first.guardian.publishHead = () => Promise.reject(new Error('power cut'))
+    await expect(mint(guardian)).rejects.toThrow('power cut')
+    await first.close()
+
+    const second = guardianStorage(folder)
+    const again = await sealedKeyring(second.vault, 'secret', seal)
+    const store = second.guardian
+    const restarted = await Guardian.open({ name: 'x', url, store, keyring: again })
+    expect(restarted.locked).toBe(false)
+    expect((await restarted.head()).n).toBe(1)
   })
 
   it('locks a guardian whose database was rewritten', async () => {
