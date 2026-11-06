@@ -7,7 +7,10 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "brand": "node brand/build.mjs"
+    "brand": "node brand/build.mjs",
+    "guardian": "pnpm --filter @chirographe/server-app guardian",
+    "guardian:rotate": "pnpm --filter @chirographe/server-app guardian:rotate",
+    "witness": "pnpm --filter @chirographe/server-app witness"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

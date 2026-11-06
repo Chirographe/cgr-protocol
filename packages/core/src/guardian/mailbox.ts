@@ -8,30 +8,55 @@ export interface StoredMessage {
   content: RelayMessage
 }
 
-/** The relay: encrypted mailboxes. State is held in memory. */
-export class Mailboxes {
+/** Durable storage of the relay. */
+export interface MailboxStore {
+  /** Returns an id unique among all mailboxes. */
+  add(scan: Key, date: string, content: RelayMessage): Promise<number>
+  /** Oldest first. */
+  list(scan: Key): Promise<StoredMessage[]>
+  remove(scan: Key, id: number): Promise<void>
+}
+
+/** Volatile store for tests and tools. Not durable. */
+export class MemoryMailboxStore implements MailboxStore {
   private readonly boxes = new Map<Key, StoredMessage[]>()
   private nextId = 1
 
-  constructor(private readonly clock: () => Date = () => new Date()) {}
+  add(scan: Key, date: string, content: RelayMessage): Promise<number> {
+    const id = this.nextId++
+    this.boxes.set(scan, [...(this.boxes.get(scan) ?? []), { id, date, content }])
+    return Promise.resolve(id)
+  }
 
-  deposit(scan: Key, message: unknown): { id: number } {
+  list(scan: Key): Promise<StoredMessage[]> {
+    return Promise.resolve(this.boxes.get(scan) ?? [])
+  }
+
+  remove(scan: Key, id: number): Promise<void> {
+    const kept = (this.boxes.get(scan) ?? []).filter((message) => message.id !== id)
+    this.boxes.set(scan, kept)
+    return Promise.resolve()
+  }
+}
+
+/** The relay: encrypted mailboxes. */
+export class Mailboxes {
+  constructor(
+    private readonly store: MailboxStore,
+    private readonly clock: () => Date = () => new Date(),
+  ) {}
+
+  async deposit(scan: Key, message: unknown): Promise<{ id: number }> {
     const parsed = RelayMessageSchema.safeParse(message)
     if (!parsed.success) throw new ProtocolError('INVALID_FORMAT', 'invalid relay message')
-    const id = this.nextId++
-    const stored = { id, date: this.clock().toISOString(), content: parsed.data }
-    this.boxes.set(scan, [...(this.boxes.get(scan) ?? []), stored])
-    return { id }
+    return { id: await this.store.add(scan, this.clock().toISOString(), parsed.data) }
   }
 
-  list(scan: Key): StoredMessage[] {
-    return this.boxes.get(scan) ?? []
+  list(scan: Key): Promise<StoredMessage[]> {
+    return this.store.list(scan)
   }
 
-  remove(scan: Key, id: number): void {
-    this.boxes.set(
-      scan,
-      this.list(scan).filter((message) => message.id !== id),
-    )
+  remove(scan: Key, id: number): Promise<void> {
+    return this.store.remove(scan, id)
   }
 }

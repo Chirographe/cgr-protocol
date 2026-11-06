@@ -4,7 +4,8 @@
   "description": "Reference implementation of the Chirographe protocol",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./conformance": "./src/conformance/index.ts"
   },
   "scripts": {
     "test": "vitest run --coverage",

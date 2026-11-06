@@ -2,6 +2,8 @@ import type { Hash } from '../crypto/hash.ts'
 import type { Head, Line, RecoveryStatus } from '../model/ledger.ts'
 import type { Group } from '../model/parties.ts'
 import type { Rotation, State, Token } from '../model/token.ts'
+import type { KeyVault } from './keyring.ts'
+import type { MailboxStore } from './mailbox.ts'
 
 export interface IndexEntry {
   token_id: Hash
@@ -59,4 +61,12 @@ export interface GuardianStore {
   publishedHead(): Promise<Head | null>
   /** Atomic and durable. Kept apart from the lines, to detect a mismatch at startup. */
   publishHead(head: Head): Promise<void>
+}
+
+/** Everything a guardian keeps. A storage technology implements this, and nothing else. */
+export interface GuardianStorage {
+  guardian: GuardianStore
+  mailboxes: MailboxStore
+  vault: KeyVault
+  close(): Promise<void>
 }

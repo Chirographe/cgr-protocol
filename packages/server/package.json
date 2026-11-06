@@ -1,0 +1,26 @@
+{
+  "name": "@chirographe/server",
+  "version": "0.1.0",
+  "description": "HTTP servers for Chirographe guardians and witnesses, on any storage",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --coverage && vitest run --config vitest.scenarios.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@chirographe/core": "workspace:*",
+    "@fastify/cors": "^11.0.0",
+    "fastify": "^5.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@chirographe/storage-sqlite": "workspace:*",
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^4.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.0.0"
+  }
+}

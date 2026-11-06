@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   Guardian,
   Mailboxes,
+  MemoryMailboxStore,
   Sessions,
   acceptProposal,
   canAccept,
@@ -114,7 +115,7 @@ describe('a stealth transfer through the relay', () => {
     alice = newWallet()
     bob = newWallet()
     token = await mint(net, alice, group)
-    mailboxes = new Mailboxes(net.clock)
+    mailboxes = new Mailboxes(new MemoryMailboxStore(), net.clock)
     context = {
       directory: net.directory,
       trustOf: () => 'trusted',
@@ -132,8 +133,9 @@ describe('a stealth transfer through the relay', () => {
       now: net.now,
     })
     const from = walletAddress(alice, 'https://relay.test')
-    mailboxes.deposit(address.scan, sealMessage(address.scan, { from, proposal, previous: token }))
-    const [stored] = mailboxes.list(address.scan)
+    const message = sealMessage(address.scan, { from, proposal, previous: token })
+    await mailboxes.deposit(address.scan, message)
+    const [stored] = await mailboxes.list(address.scan)
     return openMessage(bob, stored?.content as NonNullable<typeof stored>['content']) as Envelope
   }
 
@@ -323,13 +325,13 @@ describe('relay and sessions', () => {
     expect(openMessage(bob, message)).toEqual(refusal)
   })
 
-  it('stores encrypted messages only', () => {
-    const boxes = new Mailboxes()
+  it('stores encrypted messages only', async () => {
+    const boxes = new Mailboxes(new MemoryMailboxStore())
     const scan = generateSigner().key
-    expect(() => boxes.deposit(scan, { clear: 'text' })).toThrow()
-    const { id } = boxes.deposit(scan, { ephemeral: scan, ciphertext: 'AAAA' })
-    expect(boxes.list(scan)).toHaveLength(1)
-    boxes.remove(scan, id)
-    expect(boxes.list(scan)).toHaveLength(0)
+    await expect(boxes.deposit(scan, { clear: 'text' })).rejects.toThrow()
+    const { id } = await boxes.deposit(scan, { ephemeral: scan, ciphertext: 'AAAA' })
+    expect(await boxes.list(scan)).toHaveLength(1)
+    await boxes.remove(scan, id)
+    expect(await boxes.list(scan)).toHaveLength(0)
   })
 })
