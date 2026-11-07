@@ -1,6 +1,6 @@
-<p align="center"><img src="brand/dist/chirographe-icon-1024.png" width="160" alt="Chirographe"></p>
+<p align="center"><img src="assets/cgr-protocol-icon-1024.png" width="160" alt="CGR Protocol"></p>
 
-# Chirographe
+# CGR Protocol
 
 Unforgeable, non-duplicable digital tokens, without a blockchain. Each token is held by its owner, and a group of guardians guarantees that each of its states is spent only once.
 
@@ -9,7 +9,6 @@ Unforgeable, non-duplicable digital tokens, without a blockchain. Each token is 
 - [packages/server](packages/server): HTTP servers for guardians and witnesses, on any storage.
 - [packages/storage-sqlite](packages/storage-sqlite): a storage driver, on SQLite.
 - [apps/server](apps/server): a guardian or a witness on SQLite, ready to run.
-- [brand](brand): the logo, generated from one source.
 
 ## Development
 
@@ -20,7 +19,6 @@ pnpm install
 pnpm test
 pnpm typecheck
 pnpm lint
-pnpm brand
 ```
 
 ## Running a guardian
