@@ -6,12 +6,15 @@ import {
   commit,
   composeProposal,
   deriveOwner,
+  finalizeRecovery,
   generateSigner,
   hashOf,
   hashToBytes,
   isKnownKey,
+  inspectEnvelope,
   isSoleOwner,
   owns,
+  requestRecovery,
   scanOwners,
   signersFor,
   signersForState,
@@ -20,6 +23,7 @@ import {
   type Guardian,
   type GuardianApi,
   type Token,
+  type Wallet,
 } from '../src/index.ts'
 import { encodeBase64Url } from '../src/encoding/base64url.ts'
 import { Network, directAddress, groupOf, guardians, mint, newWallet } from './network.ts'
@@ -65,6 +69,56 @@ describe('a server that a wallet logs in to', () => {
     await expect(commit(net.directory, complete, token)).rejects.toMatchObject({
       code: 'INVALID_SIGNATURE',
     })
+  })
+})
+
+describe('a token after a recovery', () => {
+  const setup = async () => {
+    const net = new Network()
+    const [x, y] = (await guardians(net, ['x', 'y'])) as [Guardian, Guardian]
+    const owner = newWallet()
+    const token = await mint(net, owner, groupOf([x], 1), {
+      recovery: { group: groupOf([y], 1), delay_seconds: 60 },
+    })
+    const signers = signersForState(owner, token.state)
+    const { proposal } = await requestRecovery(net.directory, token, signers)
+    return { net, owner, token, proposal }
+  }
+
+  const offer = async (net: Network, owner: Wallet, previous: Token, bob: Wallet) => {
+    const proposal = await composeProposal(previous, {
+      signers: signersForState(owner, previous.state),
+      recipient: deriveOwner(directAddress(bob)),
+      expiresIn: 3600,
+      now: net.now,
+    })
+    const from = directAddress(owner)
+    const checks = await inspectEnvelope({ from, proposal, previous }, bob, {
+      directory: net.directory,
+      trustOf: () => 'trusted',
+      lastSeen: new Map(),
+      now: net.now,
+    })
+    return checks.find((check) => check.name === 'no-recovery')?.ok
+  }
+
+  it('can change hands again once the recovery is over', async () => {
+    const { net, owner, token, proposal } = await setup()
+    net.advance(61)
+    const taken = await finalizeRecovery(net.directory, proposal, token)
+    expect(await offer(net, owner, taken, newWallet())).toBe(true)
+  })
+
+  it('stays refused in its version from before the recovery', async () => {
+    const { net, owner, token, proposal } = await setup()
+    net.advance(61)
+    await finalizeRecovery(net.directory, proposal, token)
+    expect(await offer(net, owner, token, newWallet())).toBe(false)
+  })
+
+  it('stays refused while the recovery is open', async () => {
+    const { net, owner, token } = await setup()
+    expect(await offer(net, owner, token, newWallet())).toBe(false)
   })
 })
 

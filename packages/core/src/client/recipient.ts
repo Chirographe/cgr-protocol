@@ -63,7 +63,7 @@ async function confirmations({ previous, proposal }: Envelope, directory: Direct
   ).length
 }
 
-async function recoveryAnnounced({ proposal }: Envelope, directory: Directory) {
+async function recoveryAnnounced({ proposal, previous }: Envelope, directory: Directory) {
   const { recovery } = proposal.rules
   if (!recovery) return false
   const results = await Promise.allSettled(
@@ -72,7 +72,13 @@ async function recoveryAnnounced({ proposal }: Envelope, directory: Directory) {
   return results.some(
     (r) =>
       r.status === 'fulfilled' &&
-      r.value.some((a) => a.token_id === proposal.state.token_id && a.status !== 'opposed'),
+      r.value.some(
+        (a) =>
+          a.token_id === proposal.state.token_id &&
+          a.status !== 'opposed' &&
+          // A finished recovery only stands against the states that came before it.
+          !(a.status === 'taken_over' && previous.state.sequence > a.claimed_sequence),
+      ),
   )
 }
 

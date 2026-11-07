@@ -247,7 +247,7 @@ Before signing, the recipient checks `P` (previous token) and `Q` (proposal). Al
 5. `expires_at` has not passed.
 6. No more than f members of `Q.state.guardian` are blocked by the recipient.
 7. At least `threshold` members of `P.state.guardian` report `H(P.state)` as the head, with `here: true`.
-8. No member of `recovery.group` announces this token with a status other than `opposed`.
+8. No member of `recovery.group` announces this token with a status other than `opposed`, unless it is `taken_over` and `P.sequence` is above `claimed_sequence`.
 9. Ledger check passes for each signature in `P`: otherwise warn.
 10. All members of `Q.state.guardian` are trusted by the recipient: otherwise warn.
 
