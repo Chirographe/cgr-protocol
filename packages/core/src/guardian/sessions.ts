@@ -1,7 +1,8 @@
 import { verifySignature, type Key } from '../crypto/keys.ts'
-import { decodeBase64Url, encodeBase64Url } from '../encoding/base64url.ts'
+import { encodeBase64Url } from '../encoding/base64url.ts'
 import { randomBytes } from '../encoding/bytes.ts'
 import { ProtocolError } from '../errors.ts'
+import { sessionMessage } from '../signing/messages.ts'
 
 const CHALLENGE_BYTES = 32
 const CHALLENGE_SECONDS = 120
@@ -43,7 +44,7 @@ export class Sessions {
     const valid =
       pending?.key === request.key &&
       pending.expires > this.clock().getTime() &&
-      verifySignature(request.key, request.signature, decodeBase64Url(request.challenge))
+      verifySignature(request.key, request.signature, sessionMessage(request.challenge))
     if (!valid) throw unauthenticated()
     const session = encodeBase64Url(randomBytes(CHALLENGE_BYTES))
     this.sessions.set(session, { key: request.key, expires: this.later(SESSION_SECONDS) })

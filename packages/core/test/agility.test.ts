@@ -23,6 +23,7 @@ import { Network, groupOf } from './network.ts'
 const ed: SignatureAlgorithm = {
   id: 'ed25519',
   generateSecret: () => ed25519.utils.randomSecretKey(),
+  isPublicKey: (publicKey) => publicKey.length === 32,
   publicKey: (secret) => ed25519.getPublicKey(secret),
   sign: (message, secret) => ed25519.sign(message, secret),
   verify: (signature, message, publicKey) => ed25519.verify(signature, message, publicKey),

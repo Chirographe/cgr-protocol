@@ -16,7 +16,7 @@ export async function checkLedger(
   lastSeen: Head | null,
 ): Promise<LedgerStatus> {
   const head = await guardian.head()
-  if (head.locked) return { ok: false, reason: 'guardian is locked' }
+  if (head.locked !== undefined) return { ok: false, reason: 'guardian is locked' }
 
   const { rotations } = await guardian.info()
   const current = followRotations(key, rotations)

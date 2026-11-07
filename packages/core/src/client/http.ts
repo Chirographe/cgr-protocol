@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import type { Hash } from '../crypto/hash.ts'
 import type { Key } from '../crypto/keys.ts'
-import { decodeBase64Url } from '../encoding/base64url.ts'
 import { ERROR_STATUS, ProtocolError, type ErrorCode } from '../errors.ts'
 import type { StoredMessage } from '../guardian/mailbox.ts'
 import { RelayMessageSchema, type RelayMessage } from '../model/address.ts'
@@ -26,6 +25,7 @@ import {
   type EntrySignature,
   type Token,
 } from '../model/token.ts'
+import { sessionMessage } from '../signing/messages.ts'
 import type { Signer } from '../signing/signer.ts'
 
 /** Any function with the shape of the standard `fetch`. */
@@ -193,7 +193,7 @@ export class HttpGuardian implements GuardianApi {
       '/auth/challenge',
       { key },
     )
-    const signature = await signer.sign(decodeBase64Url(challenge))
+    const signature = await signer.sign(sessionMessage(challenge))
     const { session } = await this.http.post(
       z.strictObject({ session: z.string() }),
       '/auth/response',

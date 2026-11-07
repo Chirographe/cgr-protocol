@@ -4,6 +4,7 @@ import {
   Mailboxes,
   MemoryMailboxStore,
   Sessions,
+  sessionMessage,
   acceptProposal,
   canAccept,
   commit,
@@ -287,7 +288,7 @@ describe('relay and sessions', () => {
     const sessions = new Sessions(net.clock)
     const signer = generateSigner()
     const { challenge } = sessions.challenge(signer.key)
-    const signature = await signer.sign(decodeBase64Url(challenge))
+    const signature = await signer.sign(sessionMessage(challenge))
     const { session } = sessions.respond({ key: signer.key, challenge, signature })
     expect(() => sessions.require(session, signer.key)).not.toThrow()
     expect(() => sessions.require(session, generateSigner().key)).toThrow()
@@ -301,13 +302,13 @@ describe('relay and sessions', () => {
     const sessions = new Sessions(net.clock)
     const signer = generateSigner()
     const { challenge } = sessions.challenge(signer.key)
-    const signature = await signer.sign(decodeBase64Url(challenge))
+    const signature = await signer.sign(sessionMessage(challenge))
     sessions.respond({ key: signer.key, challenge, signature })
     expect(() => sessions.respond({ key: signer.key, challenge, signature })).toThrow()
 
     const other = sessions.challenge(signer.key)
     net.advance(121)
-    const late = await signer.sign(decodeBase64Url(other.challenge))
+    const late = await signer.sign(sessionMessage(other.challenge))
     expect(() =>
       sessions.respond({ key: signer.key, challenge: other.challenge, signature: late }),
     ).toThrow()

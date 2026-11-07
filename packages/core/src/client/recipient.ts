@@ -1,5 +1,4 @@
-import { owns } from '../address/stealth.ts'
-import type { Wallet } from '../address/stealth.ts'
+import { isSoleOwner, type Wallet } from '../address/stealth.ts'
 import { hashOf } from '../crypto/hash.ts'
 import type { Key } from '../crypto/keys.ts'
 import { ProtocolError } from '../errors.ts'
@@ -122,7 +121,7 @@ export async function inspectEnvelope(
     check('chain', hashOf(previous.state) === state.previous),
     check('previous-final', isFinal(previous)),
     check('owner-signed', ownerQuorum(previous.state.owner, signatures.senders, hashOf(state))),
-    check('mine', owns(wallet, state.owner, state.ephemeral)),
+    check('mine', isSoleOwner(wallet, state.owner, state.ephemeral)),
     check('not-expired', !state.expires_at || now.getTime() < Date.parse(state.expires_at)),
     check('guardians-not-blocked', blocked <= toleratedFaults(trust.length)),
     check('unspent', heads >= previous.state.guardian.threshold),
