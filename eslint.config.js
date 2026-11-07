@@ -16,6 +16,4 @@ export default ts.config(
       ],
     },
   },
-  // A Node script that also runs code in the browser.
-  { files: ['brand/**'], rules: { 'no-undef': 'off' } },
 )

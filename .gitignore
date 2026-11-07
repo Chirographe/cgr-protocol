@@ -1,6 +1,5 @@
 node_modules
 dist
-!brand/dist
 coverage
 .env
 *.tsbuildinfo
