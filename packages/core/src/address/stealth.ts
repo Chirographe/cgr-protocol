@@ -1,7 +1,7 @@
 import { FORMAT } from '../constants.ts'
 import type { StealthAlgorithm } from '../crypto/algorithm.ts'
 import { sha256 } from '../crypto/hash.ts'
-import { formatKey, keyBytes, stealthAlgorithmOf, type Key } from '../crypto/keys.ts'
+import { formatKey, isKnownKey, keyBytes, stealthAlgorithmOf, type Key } from '../crypto/keys.ts'
 import { concat, utf8 } from '../encoding/bytes.ts'
 import type { Address } from '../model/address.ts'
 import type { Owner } from '../model/parties.ts'
@@ -71,6 +71,8 @@ export function deriveOwner(address: Address): { owner: Owner; ephemeral?: Key }
 /** The one-time secrets of a state, or `null` if this wallet does not own it. */
 function oneTimeSecrets(wallet: Wallet, owner: Owner, ephemeral: Key): Uint8Array[] | null {
   const { algorithm } = wallet
+  // Anyone can post an ephemeral: a bad one means "not for this wallet", not a crash.
+  if (!isKnownKey(ephemeral)) return null
   const shared = algorithm.sharedSecret(wallet.scan, keyBytes(ephemeral))
   const values = tweaks(algorithm, shared, wallet.spend.length)
   const secrets = wallet.spend.map((secret, j) => {
@@ -88,6 +90,16 @@ function oneTimeSecrets(wallet: Wallet, owner: Owner, ephemeral: Key): Uint8Arra
 /** True if this wallet can spend a state with this owner. */
 export function owns(wallet: Wallet, owner: Owner, ephemeral?: Key): boolean {
   return signersFor(wallet, owner, ephemeral).length >= owner.threshold
+}
+
+/**
+ * True if this owner is this wallet and nobody else, which `owns` does not say: a wallet can
+ * reach the threshold of an owner that has other keys, and those keys could spend too.
+ */
+export function isSoleOwner(wallet: Wallet, owner: Owner, ephemeral?: Key): boolean {
+  if (owner.threshold !== wallet.threshold) return false
+  const signers = signersFor(wallet, owner, ephemeral)
+  return signers.length === owner.keys.length && signers.length === wallet.spend.length
 }
 
 /** Signers for an owner held by this wallet, empty if it holds none. */

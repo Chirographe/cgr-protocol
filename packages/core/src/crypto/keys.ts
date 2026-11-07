@@ -33,10 +33,11 @@ export function stealthAlgorithmOf(key: Key): StealthAlgorithm {
   return algorithm
 }
 
+/** One spelling per key: base64url has spare bits, and a key must not pass for two. */
 export function isKnownKey(key: Key): boolean {
   try {
-    split(key)
-    return true
+    const { algorithm, bytes } = split(key)
+    return algorithm.isPublicKey(bytes) && formatKey(algorithm, bytes) === key
   } catch {
     return false
   }

@@ -1,5 +1,4 @@
-import { owns } from '../address/stealth.ts'
-import type { Wallet } from '../address/stealth.ts'
+import { isSoleOwner, type Wallet } from '../address/stealth.ts'
 import { hashOf } from '../crypto/hash.ts'
 import type { Key } from '../crypto/keys.ts'
 import { ProtocolError } from '../errors.ts'
@@ -64,7 +63,7 @@ async function confirmations({ previous, proposal }: Envelope, directory: Direct
   ).length
 }
 
-async function recoveryAnnounced({ proposal }: Envelope, directory: Directory) {
+async function recoveryAnnounced({ proposal, previous }: Envelope, directory: Directory) {
   const { recovery } = proposal.rules
   if (!recovery) return false
   const results = await Promise.allSettled(
@@ -73,7 +72,13 @@ async function recoveryAnnounced({ proposal }: Envelope, directory: Directory) {
   return results.some(
     (r) =>
       r.status === 'fulfilled' &&
-      r.value.some((a) => a.token_id === proposal.state.token_id && a.status !== 'opposed'),
+      r.value.some(
+        (a) =>
+          a.token_id === proposal.state.token_id &&
+          a.status !== 'opposed' &&
+          // A finished recovery only stands against the states that came before it.
+          !(a.status === 'taken_over' && previous.state.sequence > a.claimed_sequence),
+      ),
   )
 }
 
@@ -122,7 +127,7 @@ export async function inspectEnvelope(
     check('chain', hashOf(previous.state) === state.previous),
     check('previous-final', isFinal(previous)),
     check('owner-signed', ownerQuorum(previous.state.owner, signatures.senders, hashOf(state))),
-    check('mine', owns(wallet, state.owner, state.ephemeral)),
+    check('mine', isSoleOwner(wallet, state.owner, state.ephemeral)),
     check('not-expired', !state.expires_at || now.getTime() < Date.parse(state.expires_at)),
     check('guardians-not-blocked', blocked <= toleratedFaults(trust.length)),
     check('unspent', heads >= previous.state.guardian.threshold),

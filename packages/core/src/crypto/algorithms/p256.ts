@@ -25,6 +25,15 @@ export const p256: StealthAlgorithm = {
 
   publicKey: (secret) => toSpki(curve.getPublicKey(secret, false)),
 
+  isPublicKey(publicKey) {
+    try {
+      Point.fromBytes(fromSpki(publicKey)).assertValidity()
+      return true
+    } catch {
+      return false
+    }
+  },
+
   sign: (message, secret) => curve.sign(message, secret, { prehash: true, lowS: false }),
 
   verify(signature, message, publicKey) {

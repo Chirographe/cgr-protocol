@@ -15,7 +15,7 @@ A token is a signed object held by its owner. Its state names one owner and one 
 
 ## 2. Encoding
 
-- Keys: `<algorithm>:` + base64url of the public key. The only algorithm is `p256`: ECDSA P-256, SPKI DER. Unknown prefixes are rejected.
+- Keys: `<algorithm>:` + base64url of the public key. The only algorithm is `p256`: ECDSA P-256, SPKI DER. Unknown prefixes, invalid points and non-canonical base64url are rejected.
 - `H(x)`: SHA-256 of the RFC 8785 canonical JSON of `x`, as `sha256:` + 64 lowercase hex characters.
 - `bytes(h)`: the 32 bytes of a hash.
 - Zero hash: `sha256:` + 64 zeros.
@@ -85,7 +85,7 @@ Signed messages, in UTF-8 unless stated:
 
 ```text
 owner     bytes(H(state))
-session   the 32 bytes issued by the server
+session   chirographe/1|session|<challenge>
 guardian  chirographe/1|guardian|<H(state)>|<line>|<line_hash>
 entry     chirographe/1|entry|<H(state)>
 head      chirographe/1|head|<n>|<root>
@@ -247,7 +247,7 @@ Before signing, the recipient checks `P` (previous token) and `Q` (proposal). Al
 5. `expires_at` has not passed.
 6. No more than f members of `Q.state.guardian` are blocked by the recipient.
 7. At least `threshold` members of `P.state.guardian` report `H(P.state)` as the head, with `here: true`.
-8. No member of `recovery.group` announces this token with a status other than `opposed`.
+8. No member of `recovery.group` announces this token with a status other than `opposed`, unless it is `taken_over` and `P.sequence` is above `claimed_sequence`.
 9. Ledger check passes for each signature in `P`: otherwise warn.
 10. All members of `Q.state.guardian` are trusted by the recipient: otherwise warn.
 

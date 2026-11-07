@@ -7,6 +7,8 @@ export interface SignatureAlgorithm {
   readonly id: string
   generateSecret(): Uint8Array
   publicKey(secret: Uint8Array): Uint8Array
+  /** Is this a well-formed public key of this scheme? */
+  isPublicKey(publicKey: Uint8Array): boolean
   sign(message: Uint8Array, secret: Uint8Array): Uint8Array
   verify(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): boolean
 }

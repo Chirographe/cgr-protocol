@@ -10,6 +10,9 @@ export const guardianMessage = (stateHash: Hash, line: number, lineHash: Hash): 
 
 export const entryMessage = (stateHash: Hash): Uint8Array => message('entry', stateHash)
 
+/** Never the bare challenge: a server could pass off the hash of a state as one. */
+export const sessionMessage = (challenge: string): Uint8Array => message('session', challenge)
+
 export const headMessage = (n: number, root: Hash): Uint8Array => message('head', n, root)
 
 export const rotationMessage = (previous: Key, next: Key): Uint8Array =>
