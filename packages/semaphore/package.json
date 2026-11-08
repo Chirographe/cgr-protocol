@@ -1,0 +1,28 @@
+{
+  "name": "@chirographe/semaphore",
+  "version": "0.1.0",
+  "description": "The semaphore/4 membership scheme of the Chirographe protocol: verification and proofs",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@chirographe/core": "workspace:*",
+    "@semaphore-protocol/group": "4.14.5",
+    "@semaphore-protocol/identity": "4.14.5",
+    "@semaphore-protocol/proof": "4.14.5",
+    "zod": "^4.0.0",
+    "@noble/hashes": "^2.0.0",
+    "poseidon-lite": "0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.0.0"
+  },
+  "sideEffects": false
+}

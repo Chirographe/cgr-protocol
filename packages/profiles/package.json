@@ -1,0 +1,24 @@
+{
+  "name": "@chirographe/profiles",
+  "version": "0.1.0",
+  "description": "Profiles of the Chirographe protocol: property titles, contracts, anonymous votes",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@chirographe/core": "workspace:*",
+    "@chirographe/semaphore": "workspace:*",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.0.0"
+  },
+  "sideEffects": false
+}

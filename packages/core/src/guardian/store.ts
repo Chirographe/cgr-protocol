@@ -1,55 +1,72 @@
 import type { Hash } from '../crypto/hash.ts'
-import type { Head, Line, RecoveryStatus } from '../model/ledger.ts'
-import type { Group } from '../model/parties.ts'
-import type { Rotation, State, Token } from '../model/token.ts'
+import type { Group } from '../model/group.ts'
+import type { Head, Line, NoticeStatus } from '../model/ledger.ts'
+import type { Rotation, Transition } from '../model/transition.ts'
 import type { KeyVault } from './keyring.ts'
 import type { MailboxStore } from './mailbox.ts'
 
+/** Where a token stands for this guardian (section 8). */
 export interface IndexEntry {
-  token_id: Hash
+  token: Hash
   n: number
-  state_hash: Hash
-  here: boolean
-  moved_to: Group | null
+  output: Hash
+  /** `H(body)` of the transition that produced `output`, or that ended the token. */
+  transition: Hash
   sequence: number
+  here: boolean
+  /** The group holding the token, or `null` once it ended. */
+  moved_to: Group | null
 }
 
+/** A promise of `/transitions/enter`, kept until the arrival is certified. */
 export interface Commitment {
-  state_hash: Hash
-  token_id: Hash
-  previous: State
+  transition: Hash
+  tokens: Hash[]
   date: string
 }
 
-export interface RecoveryRequest {
-  token_id: Hash
-  state_hash: Hash
-  proposal: Token
-  previous: State
+/** An announced takeover. One per token. */
+export interface NoticeRecord {
+  token: Hash
+  transition: Transition
+  previous: Transition[]
+  /** `H(output)` of the noticed output of this token. */
+  output: Hash
+  sequence: number
   ends_at: string
-  status: RecoveryStatus
+  status: NoticeStatus
   line: number
+}
+
+/** A claim recorded under an output, to list them (section 10). */
+export interface ClaimRecord {
+  output: Hash
+  transition: Hash
 }
 
 /** Reads and writes inside one serialized transaction. */
 export interface LedgerTransaction {
-  /** Must refuse a non-null `spent` already present, whatever the caller did. */
+  /** Must refuse a value of `spent` already present, whatever the caller did. */
   appendLine(line: Line): Promise<void>
   lineCount(): Promise<number>
   lines(from: number, limit: number): Promise<Line[]>
   lineHashes(): Promise<Hash[]>
-  isConsumed(hash: Hash): Promise<boolean>
+  isSpent(value: Hash): Promise<boolean>
   rotations(): Promise<Rotation[]>
-  token(stateHash: Hash): Promise<Token | null>
-  saveToken(stateHash: Hash, token: Token): Promise<void>
-  index(id: Hash): Promise<IndexEntry | null>
+  saveRotation(rotation: Rotation): Promise<void>
+  transition(hash: Hash): Promise<Transition | null>
+  saveTransition(hash: Hash, transition: Transition): Promise<void>
+  index(token: Hash): Promise<IndexEntry | null>
   indexEntries(): Promise<IndexEntry[]>
   saveIndex(entry: IndexEntry): Promise<void>
+  saveClaim(claim: ClaimRecord): Promise<void>
+  claims(output: Hash): Promise<Hash[]>
+  commitment(transition: Hash): Promise<Commitment | null>
   saveCommitment(commitment: Commitment): Promise<void>
-  deleteCommitment(stateHash: Hash): Promise<void>
-  recovery(id: Hash): Promise<RecoveryRequest | null>
-  recoveries(): Promise<RecoveryRequest[]>
-  saveRecovery(request: RecoveryRequest): Promise<void>
+  deleteCommitment(transition: Hash): Promise<void>
+  notice(token: Hash): Promise<NoticeRecord | null>
+  notices(): Promise<NoticeRecord[]>
+  saveNotice(notice: NoticeRecord): Promise<void>
 }
 
 /**

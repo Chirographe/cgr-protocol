@@ -1,6 +1,5 @@
 import { hashFromBytes, hashOf, hashToBytes, type Hash } from '../crypto/hash.ts'
 import type { Line } from '../model/ledger.ts'
-import type { Rotation } from '../model/token.ts'
 import {
   consistencyProof,
   inclusionProof,
@@ -42,16 +41,14 @@ export const checkConsistency = (
     path.map(hashToBytes),
   )
 
-export const rotationsOf = (lines: Line[]): Rotation[] =>
-  lines.flatMap((line) => (line.type === 'rotation' ? [line.origin as Rotation] : []))
-
-/** The line number of a repeated `spent`, which proves guardian fraud. */
+/** The line number of a value spent twice, which proves guardian fraud. */
 export function findDoubleSpend(lines: Line[]): number | null {
   const consumed = new Set<Hash>()
   for (const line of lines) {
-    if (line.spent === null) continue
-    if (consumed.has(line.spent)) return line.n
-    consumed.add(line.spent)
+    for (const value of line.spent) {
+      if (consumed.has(value)) return line.n
+      consumed.add(value)
+    }
   }
   return null
 }

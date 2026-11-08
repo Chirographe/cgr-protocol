@@ -1,5 +1,5 @@
 import { verifySignature, type Key } from '../crypto/keys.ts'
-import type { Rotation } from '../model/token.ts'
+import type { Rotation } from '../model/transition.ts'
 import { rotationMessage } from './messages.ts'
 import type { Signer } from './signer.ts'
 

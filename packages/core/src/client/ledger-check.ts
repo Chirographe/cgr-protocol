@@ -1,9 +1,9 @@
-import { hashOf } from '../crypto/hash.ts'
+import type { Hash } from '../crypto/hash.ts'
 import { verifySignature, type Key } from '../crypto/keys.ts'
 import { checkConsistency, checkInclusion, hashLine } from '../ledger/line.ts'
 import type { GuardianApi } from '../model/api.ts'
 import type { Head } from '../model/ledger.ts'
-import type { GuardianSignature, State } from '../model/token.ts'
+import type { Vote } from '../model/transition.ts'
 import { headMessage } from '../signing/messages.ts'
 import { followRotations } from '../signing/rotations.ts'
 
@@ -33,17 +33,18 @@ export async function checkLedger(
   return { ok: true, head, key: current }
 }
 
-/** Is the line named by a guardian signature really in the ledger, for this state? */
-export async function checkTokenLine(
+/** Is the line named by a vote really in the ledger, for this transition? */
+export async function checkVoteLine(
   guardian: GuardianApi,
-  state: State,
-  signature: GuardianSignature,
+  bodyHash: Hash,
+  vote: Vote,
   head: Head,
 ): Promise<boolean> {
-  const [line] = await guardian.lines(signature.line, 1)
-  if (!line || hashLine(line) !== signature.line_hash || line.state_hash !== hashOf(state)) {
-    return false
-  }
-  const path = await guardian.inclusionProof(signature.line, head.n)
-  return checkInclusion(signature.line_hash, signature.line, head.n, path, head.root)
+  if (vote.line === undefined || vote.line_hash === undefined || vote.line > head.n) return false
+  const [line] = await guardian.lines(vote.line, 1)
+  if (!line || hashLine(line) !== vote.line_hash) return false
+  // Only a `transition` line records a spend: a `notice` carries the same hash.
+  if (line.type !== 'transition' || line.hash !== bodyHash) return false
+  const path = await guardian.inclusionProof(vote.line, head.n)
+  return checkInclusion(vote.line_hash, vote.line, head.n, path, head.root)
 }

@@ -23,5 +23,6 @@
     "@vitest/coverage-v8": "^4.0.0",
     "typescript": "^5.6.0",
     "vitest": "^4.0.0"
-  }
+  },
+  "sideEffects": false
 }

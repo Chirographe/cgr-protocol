@@ -2,12 +2,14 @@
 
 # CGR Protocol
 
-Unforgeable, non-duplicable digital tokens, without a blockchain. Each token is held by its owner, and a group of guardians guarantees that each of its states is spent only once.
+Unforgeable, non-duplicable digital tokens, without a blockchain. Each token is held by its owner, and a group of guardians guarantees that each of its outputs is spent only once. What a token means, a property title, a contract or a vote, is a profile that guardians never read.
 
 - [PROTOCOL.md](PROTOCOL.md): the protocol specification.
 - [packages/core](packages/core): the reference implementation, `@chirographe/core`. Runs anywhere `fetch` does.
 - [packages/server](packages/server): HTTP servers for guardians and witnesses, on any storage.
 - [packages/storage-sqlite](packages/storage-sqlite): a storage driver, on SQLite.
+- [packages/semaphore](packages/semaphore): the `semaphore/4` membership proofs behind anonymous votes.
+- [packages/profiles](packages/profiles): property titles, contracts and votes.
 - [apps/server](apps/server): a guardian or a witness on SQLite, ready to run.
 
 ## Development
@@ -29,7 +31,7 @@ set -a; . ./.env; set +a
 pnpm guardian
 ```
 
-It serves plain HTTP on `127.0.0.1`: put a reverse proxy in front of it for HTTPS. `DATA_PATH` holds the ledger and the guardian key, sealed with `GUARDIAN_PASSWORD`. Lose either one and the guardian is gone, so back up that folder and keep the password apart from it.
+It serves plain HTTP on `127.0.0.1`: put a reverse proxy in front of it for HTTPS. Its policy (section 8 of the protocol) comes from `GUARDIAN_ISSUERS`, `GUARDIAN_ORIGINS` and `GUARDIAN_MAX_VALIDITY_SECONDS`; it is open by default. `DATA_PATH` holds the ledger and the guardian key, sealed with `GUARDIAN_PASSWORD`. Lose either one and the guardian is gone, so back up that folder and keep the password apart from it.
 
 To rotate the key, stop the guardian and run `pnpm guardian:rotate`. `pnpm witness` runs a witness the same way.
 
@@ -53,5 +55,11 @@ The suite also has `mailboxStoreCases`, `witnessStoreCases` and `keyVaultCases`.
 
 ```ts
 const directory = httpDirectory()
-await commit(directory, proposal, previous)
+const final = await commit(directory, transition, previous)
 ```
+
+`previous` lists the final transitions that produced the inputs of `transition`.
+
+## Membership proofs
+
+A `member` predicate names a proof scheme. A guardian verifies only the schemes it registers: pass them to `startGuardian(config, storage, { schemes })`, or to `createGuardianServer`. A client calls `registerScheme` from `@chirographe/core`.

@@ -116,17 +116,16 @@ describe('ledger helpers', () => {
     expect(root).toBe(hashFromBytes(merkleRoot(hashes.map((h) => fromHex(h.slice(7))))))
   })
 
-  it('finds a state spent twice', () => {
-    const line = (n: number, spent: string | null): Line => ({
+  it('finds a value spent twice, within a line or across lines', () => {
+    const line = (n: number, spent: string[]): Line => ({
       n,
-      type: 'transfer',
-      token_id: 'x',
-      state_hash: 'y',
+      type: 'transition',
+      hash: 'y',
       spent,
-      origin: null,
       date: 'd',
     })
-    expect(findDoubleSpend([line(1, null), line(2, 'a'), line(3, null)])).toBeNull()
-    expect(findDoubleSpend([line(1, 'a'), line(2, 'b'), line(3, 'a')])).toBe(3)
+    expect(findDoubleSpend([line(1, []), line(2, ['a', 'b']), line(3, ['c'])])).toBeNull()
+    expect(findDoubleSpend([line(1, ['a']), line(2, ['b']), line(3, ['c', 'a'])])).toBe(3)
+    expect(findDoubleSpend([line(1, ['a', 'a'])])).toBe(1)
   })
 })

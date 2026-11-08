@@ -1,40 +1,49 @@
 import type { Hash } from '../crypto/hash.ts'
-import { hashLine, rotationsOf } from '../ledger/line.ts'
+import { hashLine } from '../ledger/line.ts'
 import type { Head, Line } from '../model/ledger.ts'
-import type { Token } from '../model/token.ts'
+import type { Rotation, Transition } from '../model/transition.ts'
 import type {
+  ClaimRecord,
   Commitment,
   GuardianStore,
   IndexEntry,
   LedgerTransaction,
-  RecoveryRequest,
+  NoticeRecord,
 } from './store.ts'
 
 interface Data {
   lines: Line[]
-  tokens: Map<Hash, Token>
+  rotations: Rotation[]
+  transitions: Map<Hash, Transition>
   index: Map<Hash, IndexEntry>
+  claims: ClaimRecord[]
   commitments: Map<Hash, Commitment>
-  recoveries: Map<Hash, RecoveryRequest>
+  notices: Map<Hash, NoticeRecord>
 }
 
 const copy = (data: Data): Data => ({
   lines: [...data.lines],
-  tokens: new Map(data.tokens),
+  rotations: [...data.rotations],
+  transitions: new Map(data.transitions),
   index: new Map(data.index),
+  claims: [...data.claims],
   commitments: new Map(data.commitments),
-  recoveries: new Map(data.recoveries),
+  notices: new Map(data.notices),
+})
+
+const empty = (): Data => ({
+  lines: [],
+  rotations: [],
+  transitions: new Map(),
+  index: new Map(),
+  claims: [],
+  commitments: new Map(),
+  notices: new Map(),
 })
 
 /** Volatile store for tests and tools. Not durable. */
 export class MemoryGuardianStore implements GuardianStore {
-  private data: Data = {
-    lines: [],
-    tokens: new Map(),
-    index: new Map(),
-    commitments: new Map(),
-    recoveries: new Map(),
-  }
+  private data = empty()
   private head: Head | null = null
   private queue: Promise<unknown> = Promise.resolve()
 
@@ -66,43 +75,36 @@ export class MemoryGuardianStore implements GuardianStore {
 }
 
 function transactionOn(data: Data): LedgerTransaction {
-  const resolved = <T>(value: T) => Promise.resolve(value)
+  const done = <T>(value: T) => Promise.resolve(value)
+  const spent = () => new Set(data.lines.flatMap((line) => line.spent))
   return {
     appendLine(line) {
-      const reused = line.spent !== null && data.lines.some((l) => l.spent === line.spent)
-      if (reused) return Promise.reject(new Error('spent must be unique'))
+      const consumed = spent()
+      if (line.spent.some((value) => consumed.has(value))) {
+        return Promise.reject(new Error('spent must be unique'))
+      }
       data.lines.push(line)
-      return resolved(undefined)
+      return done(undefined)
     },
-    lineCount: () => resolved(data.lines.length),
-    lines: (from, limit) => resolved(data.lines.slice(from - 1, from - 1 + limit)),
-    lineHashes: () => resolved(data.lines.map(hashLine)),
-    isConsumed: (hash) => resolved(data.lines.some((line) => line.spent === hash)),
-    rotations: () => resolved(rotationsOf(data.lines)),
-    token: (hash) => resolved(data.tokens.get(hash) ?? null),
-    saveToken(hash, token) {
-      data.tokens.set(hash, token)
-      return resolved(undefined)
-    },
-    index: (id) => resolved(data.index.get(id) ?? null),
-    indexEntries: () => resolved([...data.index.values()]),
-    saveIndex(entry) {
-      data.index.set(entry.token_id, entry)
-      return resolved(undefined)
-    },
-    saveCommitment(commitment) {
-      data.commitments.set(commitment.state_hash, commitment)
-      return resolved(undefined)
-    },
-    deleteCommitment(hash) {
-      data.commitments.delete(hash)
-      return resolved(undefined)
-    },
-    recovery: (id) => resolved(data.recoveries.get(id) ?? null),
-    recoveries: () => resolved([...data.recoveries.values()]),
-    saveRecovery(request) {
-      data.recoveries.set(request.token_id, request)
-      return resolved(undefined)
-    },
+    lineCount: () => done(data.lines.length),
+    lines: (from, limit) => done(data.lines.slice(from - 1, from - 1 + limit)),
+    lineHashes: () => done(data.lines.map(hashLine)),
+    isSpent: (value) => done(spent().has(value)),
+    rotations: () => done([...data.rotations]),
+    saveRotation: (rotation) => done(void data.rotations.push(rotation)),
+    transition: (hash) => done(data.transitions.get(hash) ?? null),
+    saveTransition: (hash, transition) => done(void data.transitions.set(hash, transition)),
+    index: (token) => done(data.index.get(token) ?? null),
+    indexEntries: () => done([...data.index.values()]),
+    saveIndex: (entry) => done(void data.index.set(entry.token, entry)),
+    saveClaim: (claim) => done(void data.claims.push(claim)),
+    claims: (output) =>
+      done(data.claims.filter((c) => c.output === output).map((c) => c.transition)),
+    commitment: (hash) => done(data.commitments.get(hash) ?? null),
+    saveCommitment: (c) => done(void data.commitments.set(c.transition, c)),
+    deleteCommitment: (hash) => done(void data.commitments.delete(hash)),
+    notice: (token) => done(data.notices.get(token) ?? null),
+    notices: () => done([...data.notices.values()]),
+    saveNotice: (notice) => done(void data.notices.set(notice.token, notice)),
   }
 }

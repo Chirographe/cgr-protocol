@@ -7,11 +7,14 @@ import {
   sealedKeyring,
   type Directory,
   type GuardianStorage,
+  type MembershipScheme,
   type WitnessStorage,
 } from '@chirographe/core'
 import type { GuardianServerConfig, WitnessServerConfig } from './config.ts'
 import { createGuardianServer } from './guardian.ts'
 import { createWitnessServer } from './witness.ts'
+
+const MS_PER_SECOND = 1000
 
 async function openGuardian(config: GuardianServerConfig, storage: GuardianStorage) {
   const { name, url, policy } = config
@@ -19,14 +22,20 @@ async function openGuardian(config: GuardianServerConfig, storage: GuardianStora
   return Guardian.open({ name, url, policy, keyring, store: storage.guardian })
 }
 
+export interface GuardianStartOptions {
+  /** Proof systems `member` predicates may name. */
+  schemes?: MembershipScheme[]
+}
+
 /** Runs a guardian on any storage. The server closes the storage when it stops. */
 export async function startGuardian(
   config: GuardianServerConfig,
   storage: GuardianStorage,
+  options: GuardianStartOptions = {},
 ): Promise<{ app: FastifyInstance; guardian: Guardian }> {
   const guardian = await openGuardian(config, storage)
   const mailboxes = new Mailboxes(storage.mailboxes)
-  const app = await createGuardianServer({ ...config, guardian, mailboxes })
+  const app = await createGuardianServer({ ...config, ...options, guardian, mailboxes })
   app.addHook('onClose', () => storage.close())
   await app.listen({ host: config.host, port: config.port })
   console.log(`${config.name} on ${config.url}, key ${guardian.key}`)
@@ -67,7 +76,7 @@ export async function startWitness(
     round = observe()
       .catch((error: unknown) => console.error(error))
       .finally(() => {
-        timer = setTimeout(loop, config.intervalSeconds * 1000)
+        timer = setTimeout(loop, config.intervalSeconds * MS_PER_SECOND)
       })
   }
   app.addHook('onClose', async () => {

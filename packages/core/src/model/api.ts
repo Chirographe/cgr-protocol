@@ -1,7 +1,7 @@
 import type { Hash } from '../crypto/hash.ts'
 import type { Key } from '../crypto/keys.ts'
-import type { Announcement, Head, Line, OwnerEntry, TokenHead } from './ledger.ts'
-import type { EntrySignature, Rotation, Token } from './token.ts'
+import type { Head, Line, Notice, OwnerEntry, TokenHead } from './ledger.ts'
+import type { Rotation, Transition, Vote } from './transition.ts'
 
 export interface GuardianInfo {
   key: Key
@@ -12,14 +12,11 @@ export interface GuardianInfo {
   rotations: Rotation[]
 }
 
-export interface Transition {
-  proposal: Token
-  previous: Token
-}
-
-export interface Certificate {
-  token: Token
-  previous: Token | null
+/** The body of every `POST` of `/transitions` and `/recovery`. */
+export interface Submission {
+  transition: Transition
+  /** The final transitions that produced the inputs. */
+  previous: Transition[]
 }
 
 /** Section 10, as seen by a client. Implemented locally by `Guardian`, or over HTTP. */
@@ -29,15 +26,15 @@ export interface GuardianApi {
   lines(from: number, limit: number): Promise<Line[]>
   inclusionProof(line: number, size: number): Promise<Hash[]>
   consistencyProof(from: number, to: number): Promise<Hash[]>
-  tokenHead(id: Hash): Promise<TokenHead>
-  create(token: Token): Promise<Token>
-  validate(token: Token): Promise<Token>
-  enter(transition: Transition): Promise<{ incoming_guardian: EntrySignature }>
-  certify(certificate: Certificate): Promise<{ line: number | null }>
-  announcements(): Promise<Announcement[]>
-  requestRecovery(transition: Transition): Promise<{ ends_at: string; line: number }>
-  oppose(certificate: Certificate): Promise<{ line: number }>
-  finalizeRecovery(request: { state_hash: Hash }): Promise<Token>
+  tokenHead(token: Hash): Promise<TokenHead>
+  transition(hash: Hash): Promise<Transition>
+  claims(output: Hash): Promise<Transition[]>
+  validate(submission: Submission): Promise<Transition>
+  enter(submission: Submission): Promise<{ incoming_guardian: Vote }>
+  certify(submission: Submission): Promise<{ line: number | null }>
+  notices(): Promise<Notice[]>
+  notice(submission: Submission): Promise<{ ends_at: string; line: number }>
+  oppose(submission: Submission): Promise<{ line: number }>
   owners(from: number, limit: number): Promise<OwnerEntry[]>
 }
 

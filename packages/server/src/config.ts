@@ -1,4 +1,5 @@
 import { OPEN_POLICY, type Policy } from '@chirographe/core'
+import { DEFAULT_REQUESTS_PER_MINUTE } from './guardian.ts'
 
 type Env = Record<string, string | undefined>
 
@@ -34,10 +35,15 @@ interface CommonConfig {
   trustProxy: boolean
 }
 
+const DEFAULT_HOST = '127.0.0.1'
+const DEFAULT_GUARDIAN_PORT = 4001
+const DEFAULT_WITNESS_PORT = 4100
+const DEFAULT_WITNESS_INTERVAL_SECONDS = 30
+
 const common = (env: Env, prefix: string, defaultPort: number): CommonConfig => ({
   name: required(env, `${prefix}_NAME`),
   password: required(env, `${prefix}_PASSWORD`),
-  host: env.HOST ?? '127.0.0.1',
+  host: env.HOST ?? DEFAULT_HOST,
   port: integer(env, 'PORT', defaultPort),
   corsOrigins: list(env.CORS_ORIGINS),
   trustProxy: env.TRUST_PROXY === 'true',
@@ -51,18 +57,18 @@ export interface GuardianServerConfig extends CommonConfig {
 }
 
 export const readGuardianConfig = (env: Env): GuardianServerConfig => ({
-  ...common(env, 'GUARDIAN', 4001),
+  ...common(env, 'GUARDIAN', DEFAULT_GUARDIAN_PORT),
   url: required(env, 'GUARDIAN_URL'),
   policy: {
-    creators: keysOrAnyone(env.GUARDIAN_CREATORS),
+    issuers: keysOrAnyone(env.GUARDIAN_ISSUERS),
     origins: keysOrAnyone(env.GUARDIAN_ORIGINS),
-    maxProposalSeconds: integer(
+    maxValiditySeconds: integer(
       env,
-      'GUARDIAN_MAX_PROPOSAL_SECONDS',
-      OPEN_POLICY.maxProposalSeconds,
+      'GUARDIAN_MAX_VALIDITY_SECONDS',
+      OPEN_POLICY.maxValiditySeconds,
     ),
   },
-  requestsPerMinute: integer(env, 'GUARDIAN_REQUESTS_PER_MINUTE', 60),
+  requestsPerMinute: integer(env, 'GUARDIAN_REQUESTS_PER_MINUTE', DEFAULT_REQUESTS_PER_MINUTE),
 })
 
 export interface WitnessServerConfig extends CommonConfig {
@@ -71,7 +77,7 @@ export interface WitnessServerConfig extends CommonConfig {
 }
 
 export const readWitnessConfig = (env: Env): WitnessServerConfig => ({
-  ...common(env, 'WITNESS', 4100),
+  ...common(env, 'WITNESS', DEFAULT_WITNESS_PORT),
   guardians: list(env.WITNESS_GUARDIANS),
-  intervalSeconds: integer(env, 'WITNESS_INTERVAL_SECONDS', 30),
+  intervalSeconds: integer(env, 'WITNESS_INTERVAL_SECONDS', DEFAULT_WITNESS_INTERVAL_SECONDS),
 })

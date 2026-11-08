@@ -1,11 +1,12 @@
 import { FORMAT } from '../constants.ts'
 import type { StealthAlgorithm } from '../crypto/algorithm.ts'
-import { sha256 } from '../crypto/hash.ts'
+import { hashOf, sha256 } from '../crypto/hash.ts'
 import { formatKey, isKnownKey, keyBytes, stealthAlgorithmOf, type Key } from '../crypto/keys.ts'
 import { concat, utf8 } from '../encoding/bytes.ts'
 import type { Address } from '../model/address.ts'
-import type { Owner } from '../model/parties.ts'
-import type { State } from '../model/token.ts'
+import type { Predicate } from '../model/predicate.ts'
+import { keys as keysPredicate } from '../predicate/build.ts'
+import { predicateKeys } from '../predicate/shape.ts'
 import { softwareSigner, type Signer } from '../signing/signer.ts'
 
 const DOMAIN = utf8(`${FORMAT}|stealth|`)
@@ -27,92 +28,86 @@ export function generateWallet(algorithm: StealthAlgorithm, keyCount = 1, thresh
   }
 }
 
+const publicKeyOf = (wallet: Wallet, secret: Uint8Array): Key =>
+  formatKey(wallet.algorithm, wallet.algorithm.publicKey(secret))
+
 export function walletAddress(wallet: Wallet, relay: string, stealth = true): Address {
-  const key = (secret: Uint8Array) =>
-    formatKey(wallet.algorithm, wallet.algorithm.publicKey(secret))
   return {
-    scan: key(wallet.scan),
-    keys: wallet.spend.map(key),
+    scan: publicKeyOf(wallet, wallet.scan),
+    keys: wallet.spend.map((secret) => publicKeyOf(wallet, secret)),
     threshold: wallet.threshold,
     relay,
     stealth,
   }
 }
 
-function tweaks(algorithm: StealthAlgorithm, shared: Uint8Array, count: number) {
-  return Array.from({ length: count }, (_, j) =>
+const tweaks = (algorithm: StealthAlgorithm, shared: Uint8Array, count: number) =>
+  Array.from({ length: count }, (_, j) =>
     algorithm.toTweak(sha256(concat(DOMAIN, shared, Uint8Array.of(j)))),
+  )
+
+/** Keys `P_j` of an address for one output, given the sender's scalar `r`. */
+function addressKeys(address: Address, r: Uint8Array): Key[] | null {
+  if (!address.stealth) return address.keys
+  const algorithm = stealthAlgorithmOf(address.scan)
+  const values = tweaks(
+    algorithm,
+    algorithm.sharedSecret(r, keyBytes(address.scan)),
+    address.keys.length,
+  )
+  if (values.some((tweak) => tweak === null)) return null
+  return address.keys.map((key, j) =>
+    formatKey(algorithm, algorithm.tweakPublicKey(keyBytes(key), values[j] as Uint8Array)),
   )
 }
 
-/** Derives a fresh owner from an address (section 5). */
-export function deriveOwner(address: Address): { owner: Owner; ephemeral?: Key } {
-  const owner = { keys: address.keys, threshold: address.threshold }
-  if (!address.stealth) return { owner }
-
-  const algorithm = stealthAlgorithmOf(address.scan)
+/**
+ * Section 5: the lock of each address for one output, with the `ephemeral` they share.
+ * An address pays `{ threshold, of: [sig P_j] }`.
+ */
+export function payTo(addresses: Address[]): { locks: Predicate[]; ephemeral?: Key } {
+  const stealthy = addresses.find((a) => a.stealth)
+  if (!stealthy) return { locks: addresses.map((a) => keysPredicate(a.threshold, a.keys)) }
+  const algorithm = stealthAlgorithmOf(stealthy.scan)
   for (;;) {
     const r = algorithm.generateSecret()
-    const shared = algorithm.sharedSecret(r, keyBytes(address.scan))
-    const values = tweaks(algorithm, shared, address.keys.length)
-    if (values.some((tweak) => tweak === null)) continue
+    const derived = addresses.map((address) => addressKeys(address, r))
+    if (derived.some((keys) => keys === null)) continue
     return {
-      owner: {
-        keys: address.keys.map((key, j) =>
-          formatKey(algorithm, algorithm.tweakPublicKey(keyBytes(key), values[j] as Uint8Array)),
-        ),
-        threshold: address.threshold,
-      },
+      locks: addresses.map((a, i) => keysPredicate(a.threshold, derived[i] as Key[])),
       ephemeral: formatKey(algorithm, algorithm.publicKey(r)),
     }
   }
 }
 
-/** The one-time secrets of a state, or `null` if this wallet does not own it. */
-function oneTimeSecrets(wallet: Wallet, owner: Owner, ephemeral: Key): Uint8Array[] | null {
+/** The wallet's secrets for an output: one-time ones from `ephemeral`, and its plain ones. */
+function secretsFor(wallet: Wallet, ephemeral?: Key): Uint8Array[] {
   const { algorithm } = wallet
   // Anyone can post an ephemeral: a bad one means "not for this wallet", not a crash.
-  if (!isKnownKey(ephemeral)) return null
+  if (!ephemeral || !isKnownKey(ephemeral)) return wallet.spend
   const shared = algorithm.sharedSecret(wallet.scan, keyBytes(ephemeral))
   const values = tweaks(algorithm, shared, wallet.spend.length)
-  const secrets = wallet.spend.map((secret, j) => {
+  const oneTime = wallet.spend.flatMap((secret, j) => {
     const tweak = values[j]
-    return tweak ? algorithm.tweakSecret(secret, tweak) : null
+    return tweak ? [algorithm.tweakSecret(secret, tweak)] : []
   })
-  if (secrets.some((secret) => secret === null)) return null
-  const keys = (secrets as Uint8Array[]).map((secret) =>
-    formatKey(algorithm, algorithm.publicKey(secret)),
-  )
-  const same = keys.length === owner.keys.length && keys.every((k, j) => k === owner.keys[j])
-  return same ? (secrets as Uint8Array[]) : null
+  return [...oneTime, ...wallet.spend]
 }
 
-/** True if this wallet can spend a state with this owner. */
-export function owns(wallet: Wallet, owner: Owner, ephemeral?: Key): boolean {
-  return signersFor(wallet, owner, ephemeral).length >= owner.threshold
+/** Signers of this wallet for the keys of an output. */
+export function signersFor(wallet: Wallet, keys: Key[], ephemeral?: Key): Signer[] {
+  return secretsFor(wallet, ephemeral)
+    .map((secret) => softwareSigner(secret, wallet.algorithm))
+    .filter((signer) => keys.includes(signer.key))
 }
 
-/**
- * True if this owner is this wallet and nobody else, which `owns` does not say: a wallet can
- * reach the threshold of an owner that has other keys, and those keys could spend too.
- */
-export function isSoleOwner(wallet: Wallet, owner: Owner, ephemeral?: Key): boolean {
-  if (owner.threshold !== wallet.threshold) return false
-  const signers = signersFor(wallet, owner, ephemeral)
-  return signers.length === owner.keys.length && signers.length === wallet.spend.length
-}
+/** Does this wallet hold at least one key of an output? Used to scan guardians. */
+export const holdsAnyKey = (wallet: Wallet, keys: Key[], ephemeral?: Key): boolean =>
+  signersFor(wallet, keys, ephemeral).length > 0
 
-/** Signers for an owner held by this wallet, empty if it holds none. */
-export function signersFor(wallet: Wallet, owner: Owner, ephemeral?: Key): Signer[] {
-  const { algorithm } = wallet
-  if (ephemeral) {
-    const secrets = oneTimeSecrets(wallet, owner, ephemeral)
-    return secrets ? secrets.map((secret) => softwareSigner(secret, algorithm)) : []
-  }
-  return wallet.spend
-    .map((secret) => softwareSigner(secret, algorithm))
-    .filter((signer) => owner.keys.includes(signer.key))
+/** True if this lock is exactly this wallet's address lock, so that nobody else can spend it. */
+export function isOwnLock(wallet: Wallet, lock: Predicate, ephemeral?: Key): boolean {
+  const keys = signersFor(wallet, predicateKeys(lock), ephemeral).map((s) => s.key)
+  if (keys.length !== wallet.spend.length) return false
+  return hashOf(lock) === hashOf(keysPredicate(wallet.threshold, keys))
 }
-
-export const signersForState = (wallet: Wallet, state: State): Signer[] =>
-  signersFor(wallet, state.owner, state.ephemeral)

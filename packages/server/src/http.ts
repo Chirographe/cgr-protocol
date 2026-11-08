@@ -6,6 +6,7 @@ import { ProtocolError } from '@chirographe/core'
 const BODY_LIMIT = 1024 * 1024
 // A p256 key in a URL is over Fastify's default limit of 100 characters.
 const MAX_PARAM_LENGTH = 2048
+const MINUTE_MS = 60_000
 
 export interface HttpOptions {
   /** Web origins allowed to call this server from a browser. */
@@ -47,7 +48,7 @@ export async function createHttpServer(options: HttpOptions): Promise<FastifyIns
   })
 
   app.setNotFoundHandler((_request, reply) =>
-    reply.status(404).send({ error: 'UNKNOWN_STATE', message: 'unknown route' }),
+    reply.status(404).send({ error: 'UNKNOWN', message: 'unknown route' }),
   )
 
   return app
@@ -58,7 +59,7 @@ export function rateLimit(limit: number, now: () => number = Date.now) {
   let minute = 0
   let counts = new Map<string, number>()
   return (client: string): void => {
-    const current = Math.floor(now() / 60_000)
+    const current = Math.floor(now() / MINUTE_MS)
     if (current !== minute) {
       minute = current
       counts = new Map()

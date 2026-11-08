@@ -79,7 +79,7 @@ export class Witness {
     const lines = await this.allLines(entry.url, head.n)
     const repeated = findDoubleSpend(lines)
     if (repeated !== null) {
-      await this.fraud(entry, `line ${repeated} spends a state twice`, head, null)
+      await this.fraud(entry, `line ${repeated} spends a value twice`, head, null)
       return
     }
     if (ledgerRoot(lines.slice(0, head.n).map(hashLine)) !== head.root) {

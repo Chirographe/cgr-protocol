@@ -1,722 +1,184 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   Guardian,
-  MemoryGuardianStore,
-  QuorumError,
-  acceptProposal,
+  ProtocolError,
+  claimOf,
   commit,
-  composeProposal,
-  composeToken,
-  createToken,
-  checkLedger,
-  generateSigner,
-  hashLine,
-  hashOf,
-  headMessage,
-  hashToBytes,
-  ledgerRoot,
-  verifySignature,
-  memoryKeyring,
-  signersForState,
-  soleOwner,
-  validateToken,
-  type Group,
-  type Line,
-  type Policy,
-  type Token,
-  type Wallet,
-  type Head,
+  composeTransition,
+  findDoubleSpend,
+  isFinal,
+  outputId,
+  predicates,
+  signTransition,
+  spendOf,
+  tokenOf,
+  addProofs,
+  regroup,
+  bodyHash,
+  hasQuorum,
+  type Transition,
 } from '../src/index.ts'
-import { Network, directAddress, groupOf, guardians, mint, newWallet } from './network.ts'
+import { Network } from './support/network.ts'
+import { TEST_SCHEME, commitmentOf, nullifierOf, rootOf } from './support/scheme.ts'
+import { heldAt, mint, move, people, transfer } from './support/tokens.ts'
 
-const owner = (wallet: Wallet) => {
-  const { keys, threshold } = directAddress(wallet)
-  return { owner: { keys, threshold } }
-}
+const { sig, member } = predicates
+const { alice, bob, carol } = people('alice', 'bob', 'carol')
 
-async function transfer(net: Network, token: Token, from: Wallet, to: Wallet, guardian?: Group) {
-  const proposal = await composeProposal(token, {
-    signers: signersForState(from, token.state),
-    recipient: owner(to),
-    expiresIn: 3600,
-    now: net.now,
-    ...(guardian ? { guardian } : {}),
-  })
-  const accepted = await acceptProposal(proposal, signersForState(to, proposal.state))
-  return commit(net.directory, accepted, token)
-}
+const refused = (promise: Promise<unknown>, code: string) =>
+  expect(promise).rejects.toSatisfy((e) => e instanceof ProtocolError && e.code === code)
 
-describe('single guardian', () => {
-  let net: Network
-  let x: Guardian
-  let group: Group
-  let alice: Wallet
-  let bob: Wallet
-  let charlie: Wallet
-  let token: Token
+describe('guardian', () => {
+  it('creates, transfers and finalizes with a quorum', async () => {
+    const net = new Network()
+    const group = await net.group(['a', 'b', 'c', 'd'], 3)
+    const minted = await mint(net, { group, owner: alice! })
+    expect(await isFinal(minted.transition, [])).toBe(true)
 
-  beforeEach(async () => {
-    net = new Network()
-    ;[x] = (await guardians(net, ['x'])) as [Guardian]
-    group = groupOf([x], 1)
-    alice = newWallet()
-    bob = newWallet()
-    charlie = newWallet()
-    token = await mint(net, alice, group)
+    const moved = await transfer(net, minted, [alice!], { lock: sig(bob!.key) })
+    expect(await isFinal(moved.transition, [minted.transition])).toBe(true)
+    const head = await net.node('a').guardian.tokenHead(tokenOf(moved.output))
+    expect(head).toMatchObject({ here: true, output: outputId(moved.output), sequence: 1 })
   })
 
-  it('records a creation', async () => {
-    expect(() => validateToken(token, { stage: 'final' })).not.toThrow()
-    const [line] = await x.lines(1, 10)
-    expect(line).toMatchObject({ n: 1, type: 'creation', spent: null })
-    expect(await x.tokenHead(token.state.token_id)).toMatchObject({ here: true, n: 1 })
+  it('refuses a double spend and replays a recorded transition', async () => {
+    const net = new Network()
+    const group = await net.group(['a'], 1)
+    const minted = await mint(net, { group, owner: alice! })
+    const first = await move(minted, [alice!], { lock: sig(bob!.key) })
+    const second = await move(minted, [alice!], { lock: sig(carol!.key) })
+    const recorded = await commit(net.directory, first, [minted.transition])
+    expect(await commit(net.directory, first, [minted.transition])).toEqual(recorded)
+    await refused(commit(net.directory, second, [minted.transition]), 'ALREADY_SPENT')
+    const lines = await net.node('a').guardian.lines(1, 100)
+    expect(findDoubleSpend(lines)).toBeNull()
   })
 
-  it('returns the stored token when a creation is replayed', async () => {
-    await expect(x.create(token)).resolves.toBeDefined()
-    expect(await x.lines(1, 10)).toHaveLength(1)
+  it('ends a token spent without continuation', async () => {
+    const net = new Network()
+    const group = await net.group(['a'], 1)
+    const minted = await mint(net, { group, owner: alice! })
+    const end = await signTransition(
+      composeTransition({ group, inputs: [spendOf(minted.output)] }),
+      [alice!],
+    )
+    await commit(net.directory, end, [minted.transition])
+    const head = await net.node('a').guardian.tokenHead(tokenOf(minted.output))
+    expect(head).toEqual({ here: false, moved_to: null, sequence: 1 })
+    await refused(transfer(net, minted, [alice!]), 'ALREADY_SPENT')
   })
 
-  it('refuses a second state 0 for the same token', async () => {
-    const state = { ...token.state, date: '2026-11-06T13:00:00.000Z' }
-    const message = hashToBytes(hashOf(state))
-    const [signer] = signersForState(alice, token.state)
-    const senders = [
-      {
-        type: 'raw' as const,
-        key: signer?.key as string,
-        signature: (await signer?.sign(message)) as string,
-      },
-    ]
-    await expect(x.create({ ...token, state, signatures: { senders } })).rejects.toMatchObject({
-      code: 'STATE_ALREADY_SPENT',
-    })
+  it('accepts one claim per nullifier, and lists them', async () => {
+    const net = new Network()
+    const group = await net.group(['a', 'b', 'c', 'd'], 3)
+    const members = ['v1', 'v2'].map(commitmentOf)
+    const root = rootOf(members)
+    const election = await mint(net, { group, owner: alice!, claim: member(root, TEST_SCHEME) })
+    const scope = outputId(election.output)
+
+    const ballot = async (secret: string, choice: string): Promise<Transition> => {
+      const nullifier = nullifierOf(secret, scope)
+      const t = composeTransition({
+        group,
+        inputs: [claimOf(election.output, nullifier)],
+        data: { choice },
+      })
+      return addProofs(t, [
+        { scheme: TEST_SCHEME, nullifier, proof: { secret, members, signal: bodyHash(t) } },
+      ])
+    }
+    await commit(net.directory, await ballot('v1', 'yes'), [election.transition])
+    await commit(net.directory, await ballot('v2', 'no'), [election.transition])
+    await refused(
+      commit(net.directory, await ballot('v1', 'no'), [election.transition]),
+      'ALREADY_SPENT',
+    )
+    await refused(
+      commit(net.directory, await ballot('intruder', 'no'), [election.transition]),
+      'NOT_AUTHORIZED',
+    )
+
+    const claims = await net.node('b').guardian.claims(scope)
+    expect(claims.map((c) => c.body.data)).toEqual([{ choice: 'yes' }, { choice: 'no' }])
+    expect(claims.every(hasQuorum)).toBe(true)
+    const head = await net.node('a').guardian.tokenHead(tokenOf(election.output))
+    expect(head).toMatchObject({ here: true, output: scope })
   })
 
-  it('transfers', async () => {
-    const final = await transfer(net, token, alice, bob)
-    expect(() => validateToken(final, { stage: 'final', previous: token.state })).not.toThrow()
-    const lines = await x.lines(1, 10)
-    expect(lines[1]).toMatchObject({ type: 'transfer', spent: hashOf(token.state) })
-  })
-
-  it('refuses a double spend', async () => {
-    await transfer(net, token, alice, bob)
-    await expect(transfer(net, token, alice, charlie)).rejects.toMatchObject({
-      code: 'STATE_ALREADY_SPENT',
-    })
-  })
-
-  it('lets only one of two concurrent spends through', async () => {
-    const results = await Promise.allSettled([
-      transfer(net, token, alice, bob),
-      transfer(net, token, alice, charlie),
+  it('moves a token to another group with entries and certificates', async () => {
+    const net = new Network()
+    const from = await net.group(['a', 'b', 'c', 'd'], 3)
+    const to = await net.group(['x', 'y', 'z', 'w'], 3)
+    const minted = await mint(net, { group: from, owner: alice! })
+    const moved = await commit(net.directory, await move(minted, [alice!], { group: to }), [
+      minted.transition,
     ])
-    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
-    expect(await x.lines(1, 10)).toHaveLength(2)
+    expect(moved.incoming?.length).toBeGreaterThanOrEqual(3)
+
+    const left = await net.node('a').guardian.tokenHead(tokenOf(minted.output))
+    expect(left).toMatchObject({ here: false, sequence: 1 })
+    const held = heldAt(moved)
+    const arrived = await net.node('x').guardian.tokenHead(tokenOf(held.output))
+    expect(arrived).toMatchObject({ here: true, output: outputId(held.output) })
+
+    const next = await transfer(net, held, [alice!], { lock: sig(bob!.key) })
+    expect(next.output.group).toEqual(to)
   })
 
-  it('resumes a commit: replaying adds no line', async () => {
-    const proposal = await composeProposal(token, {
-      signers: signersForState(alice, token.state),
-      recipient: owner(bob),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const accepted = await acceptProposal(proposal, signersForState(bob, proposal.state))
-    await commit(net.directory, accepted, token)
-    await commit(net.directory, accepted, token)
-    expect(await x.lines(1, 10)).toHaveLength(2)
-  })
-
-  it('cancels a proposal by a transfer to oneself', async () => {
-    const pending = await composeProposal(token, {
-      signers: signersForState(alice, token.state),
-      recipient: owner(bob),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const cancel = await composeProposal(token, {
-      signers: signersForState(alice, token.state),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    await commit(net.directory, cancel, token)
-    const accepted = await acceptProposal(pending, signersForState(bob, pending.state))
-    await expect(commit(net.directory, accepted, token)).rejects.toMatchObject({
-      code: 'STATE_ALREADY_SPENT',
-    })
-  })
-
-  it('refuses unknown tokens and states', async () => {
-    await expect(x.tokenHead(hashOf('nothing'))).rejects.toMatchObject({ code: 'UNKNOWN_STATE' })
-    const next = await composeProposal(token, {
-      signers: signersForState(alice, token.state),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const state = { ...next.state, previous: hashOf('elsewhere') }
-    await expect(x.validate({ ...next, state })).rejects.toMatchObject({ code: 'UNKNOWN_STATE' })
-    const other = { ...next, state: { ...next.state, token_id: hashOf('none') } }
-    await expect(x.validate(other)).rejects.toMatchObject({ code: 'RULES_TAMPERED' })
-    await expect(x.validate({ nothing: true })).rejects.toMatchObject({ code: 'INVALID_FORMAT' })
-  })
-
-  it('applies its policy', async () => {
-    const policy: Policy = { creators: [], origins: [], maxProposalSeconds: 60 }
-    x.setPolicy(policy)
-    await expect(mint(net, bob, group)).rejects.toMatchObject({ code: 'POLICY_REFUSED' })
-    await expect(transfer(net, token, alice, bob)).rejects.toMatchObject({
-      code: 'POLICY_REFUSED',
-    })
-    expect((await x.info()).policy.open).toBe(false)
-  })
-
-  it('checks its own url', async () => {
-    const wrong = { members: [{ key: x.key, url: 'https://elsewhere.test' }], threshold: 1 }
-    const signer = generateSigner()
-    const token2 = await composeToken({
-      owner: soleOwner(signer.key),
-      signers: [signer],
-      subject: 'x',
-      guardian: wrong,
-    })
-    await expect(x.create(token2)).rejects.toMatchObject({ code: 'INVALID_FORMAT' })
-  })
-
-  it('refuses tokens of other guardians', async () => {
-    const [y] = (await guardians(net, ['y'])) as [Guardian]
-    const signer = generateSigner()
-    const foreign = await composeToken({
-      owner: soleOwner(signer.key),
-      signers: [signer],
-      subject: 'x',
-      guardian: groupOf([y], 1),
-    })
-    await expect(x.create(foreign)).rejects.toMatchObject({ code: 'INVALID_FORMAT' })
-  })
-
-  it('lists tokens by owner', async () => {
-    const [entry] = await x.owners(1, 10)
-    expect(entry?.owner).toEqual(token.state.owner)
-    const key = token.state.owner.keys[0] as string
-    expect(await x.tokensOf(key)).toHaveLength(1)
-    expect(await x.tokensOf(generateSigner().key)).toHaveLength(0)
-  })
-
-  it('publishes a head matching its lines', async () => {
-    await transfer(net, token, alice, bob)
-    const head = await x.head()
-    const lines = await x.lines(1, 10)
-    expect(head.n).toBe(2)
-    expect(head.root).toBe(ledgerRoot(lines.map(hashLine)))
-    await expect(x.inclusionProof(1, 5)).rejects.toMatchObject({ code: 'UNKNOWN_STATE' })
-  })
-})
-
-describe('integrity', () => {
-  const open = async (store: MemoryGuardianStore, keyring = memoryKeyring()) =>
-    Guardian.open({ name: 'x', url: 'https://x.test', store, keyring })
-
-  it('locks itself when a line was rewritten', async () => {
-    const store = new MemoryGuardianStore()
-    const keyring = memoryKeyring()
-    const guardian = await open(store, keyring)
-    const signer = generateSigner()
-    const token = await composeToken({
-      owner: soleOwner(signer.key),
-      signers: [signer],
-      subject: 'x',
-      guardian: groupOf([guardian], 1),
-    })
-    await guardian.create(token)
-    store.tamper(1, { state_hash: hashOf('forged') })
-
-    const reopened = await open(store, keyring)
-    expect(reopened.locked).toBe(true)
-    expect((await reopened.head()).locked).toBe(true)
-    await expect(reopened.create(token)).rejects.toMatchObject({ code: 'LEDGER_LOCKED' })
-    expect((await reopened.lines(1, 1)).length).toBe(1)
-  })
-
-  describe('after a crash', () => {
-    const newToken = async (guardian: Guardian) => {
-      const signer = generateSigner()
-      return composeToken({
-        owner: soleOwner(signer.key),
-        signers: [signer],
-        subject: 'x',
-        guardian: groupOf([guardian], 1),
+  it('changes group while keeping some members, or only the threshold', async () => {
+    const net = new Network()
+    const [a, b, c, d, e] = await Promise.all(['a', 'b', 'c', 'd', 'e'].map((n) => net.add(n)))
+    const member = (g: Guardian | undefined) => ({ key: g!.key, url: g!.url })
+    const from = { members: [a, b, c, d].map(member), threshold: 3 }
+    const to = { members: [a, b, c, e].map(member), threshold: 3 }
+    const minted = await mint(net, { group: from, owner: alice! })
+    const moved = heldAt(
+      await commit(net.directory, await signTransition(regroup(minted.output, to), [alice!]), [
+        minted.transition,
+      ]),
+    )
+    for (const name of ['a', 'e']) {
+      expect(await net.node(name).guardian.tokenHead(tokenOf(moved.output))).toMatchObject({
+        here: true,
+        sequence: 1,
       })
     }
-
-    /** Runs `work` with the power going out right after the line is committed. */
-    const crashBeforeHead = async (store: MemoryGuardianStore, work: () => Promise<unknown>) => {
-      const { publishHead } = store
-      store.publishHead = () => Promise.reject(new Error('power cut'))
-      await expect(work()).rejects.toThrow('power cut')
-      store.publishHead = publishHead
-    }
-
-    it('publishes the head it never got to publish', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      const token = await newToken(guardian)
-      await crashBeforeHead(store, () => guardian.create(token))
-      expect((await store.publishedHead())?.n).toBe(0)
-
-      const restarted = await open(store, keyring)
-      expect(restarted.locked).toBe(false)
-      const head = await restarted.head()
-      expect(head.n).toBe(1)
-      expect(head.root).toBe(ledgerRoot((await restarted.lines(1, 10)).map(hashLine)))
-      expect(verifySignature(restarted.key, head.signature, headMessage(head.n, head.root))).toBe(
-        true,
-      )
+    expect(await net.node('d').guardian.tokenHead(tokenOf(moved.output))).toMatchObject({
+      here: false,
     })
-
-    it('answers the client that retries, without a new line', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      const token = await newToken(guardian)
-      await crashBeforeHead(store, () => guardian.create(token))
-
-      const restarted = await open(store, keyring)
-      const retried = await restarted.create(token)
-      expect(retried.signatures.guardians).toHaveLength(1)
-      expect((await restarted.head()).n).toBe(1)
-    })
-
-    it('keeps working once it has restarted', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
-
-      const restarted = await open(store, keyring)
-      await restarted.create(await newToken(restarted))
-      expect((await restarted.head()).n).toBe(2)
-      expect((await open(store, keyring)).locked).toBe(false)
-    })
-
-    it('locks itself with more lines than one operation writes', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
-      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
-      expect((await open(store, keyring)).locked).toBe(true)
-    })
-
-    it('still locks itself when an older line was rewritten', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      await guardian.create(await newToken(guardian))
-      await crashBeforeHead(store, async () => guardian.create(await newToken(guardian)))
-      store.tamper(1, { state_hash: hashOf('forged') })
-      expect((await open(store, keyring)).locked).toBe(true)
-    })
-
-    it('locks itself when lines are missing', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      await guardian.create(await newToken(guardian))
-      Object.assign(store, {
-        data: { ...(store as unknown as { data: object }).data, lines: [] },
-      })
-      expect((await open(store, keyring)).locked).toBe(true)
-    })
-
-    it('finishes a rotation cut before the new key was activated', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      const old = guardian.key
-      const { activate } = keyring
-      keyring.activate = () => Promise.reject(new Error('power cut'))
-      await expect(guardian.rotate()).rejects.toThrow('power cut')
-      keyring.activate = activate
-
-      const restarted = await open(store, keyring)
-      expect(restarted.locked).toBe(false)
-      expect(restarted.key).not.toBe(old)
-      const status = await checkLedger(restarted, old, null)
-      expect(status).toMatchObject({ ok: true, key: restarted.key })
-    })
-
-    it('finishes a rotation cut after the new key was activated', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      const old = guardian.key
-      await crashBeforeHead(store, () => guardian.rotate())
-
-      const restarted = await open(store, keyring)
-      expect(restarted.locked).toBe(false)
-      expect(await checkLedger(restarted, old, null)).toMatchObject({ ok: true })
-    })
-
-    it('locks itself when the key of a rotation is lost', async () => {
-      const store = new MemoryGuardianStore()
-      const keyring = memoryKeyring()
-      const guardian = await open(store, keyring)
-      const { activate } = keyring
-      keyring.activate = () => Promise.reject(new Error('power cut'))
-      await expect(guardian.rotate()).rejects.toThrow('power cut')
-      keyring.activate = activate
-      keyring.pending = () => Promise.resolve(null)
-      expect((await open(store, keyring)).locked).toBe(true)
-    })
-  })
-
-  it('locks itself when ledger and head were rewritten together', async () => {
-    const store = new MemoryGuardianStore()
-    const keyring = memoryKeyring()
-    const guardian = await open(store, keyring)
-    const signer = generateSigner()
-    await guardian.create(
-      await composeToken({
-        owner: soleOwner(signer.key),
-        signers: [signer],
-        subject: 'x',
-        guardian: groupOf([guardian], 1),
-      }),
+    const stricter = { ...to, threshold: 4 }
+    const again = await commit(
+      net.directory,
+      await signTransition(regroup(moved.output, stricter), [alice!]),
+      [moved.transition],
     )
-    store.tamper(1, { state_hash: hashOf('forged') })
-    const lines = await store.transaction((tx) => tx.lines(1, 10))
-    const root = ledgerRoot(lines.map(hashLine))
-    const head = await store.publishedHead()
-    await store.publishHead({ ...(head as Head), root })
-
-    const reopened = await open(store, keyring)
-    expect(reopened.locked).toBe(true)
-    expect(await reopened.head()).toMatchObject({ locked: true })
+    expect(again.body.outputs[0]?.group.threshold).toBe(4)
   })
 
-  it('locks itself when the published head is gone', async () => {
-    const store = new MemoryGuardianStore()
-    const guardian = await open(store)
-    const signer = generateSigner()
-    await guardian.create(
-      await composeToken({
-        owner: soleOwner(signer.key),
-        signers: [signer],
-        subject: 'x',
-        guardian: groupOf([guardian], 1),
-      }),
+  it('lets a late member catch up from the previous transitions', async () => {
+    const net = new Network()
+    const group = await net.group(['a', 'b', 'c', 'd'], 3)
+    net.down.add('https://d.test')
+    const minted = await mint(net, { group, owner: alice! })
+    net.down.delete('https://d.test')
+    net.down.add('https://a.test')
+    const moved = await transfer(net, minted, [alice!], { lock: sig(bob!.key) })
+    const head = await net.node('d').guardian.tokenHead(tokenOf(moved.output))
+    expect(head).toMatchObject({ here: true, sequence: 1 })
+  })
+
+  it('refuses a token started twice, and a member that is not in the group', async () => {
+    const net = new Network()
+    const group = await net.group(['a'], 1)
+    const other = await net.group(['b'], 1)
+    const minted = await mint(net, { group, owner: alice! })
+    await refused(
+      net.node('b').guardian.validate({ transition: minted.transition, previous: [] }),
+      'INVALID_FORMAT',
     )
-    Object.assign(store, { head: null })
-    const reopened = await open(store)
-    expect(reopened.locked).toBe(true)
-    await expect(reopened.head()).rejects.toMatchObject({ code: 'LEDGER_LOCKED' })
-  })
-
-  it('detects a state spent twice on disk', async () => {
-    const store = new MemoryGuardianStore()
-    await store.transaction(async (tx) => {
-      const line: Line = {
-        n: 1,
-        type: 'transfer',
-        token_id: 'a',
-        state_hash: 'b',
-        spent: 'c',
-        origin: null,
-        date: 'd',
-      }
-      await tx.appendLine(line)
-      await tx.appendLine({ ...line, n: 2, spent: 'e' })
-    })
-    store.tamper(2, { spent: 'c' })
-    expect((await open(store)).locked).toBe(true)
-  })
-
-  it('refuses a duplicate spent in the store itself', async () => {
-    const store = new MemoryGuardianStore()
-    const line: Line = {
-      n: 1,
-      type: 'transfer',
-      token_id: 'a',
-      state_hash: 'b',
-      spent: 'c',
-      origin: null,
-      date: 'd',
-    }
-    await expect(
-      store.transaction(async (tx) => {
-        await tx.appendLine(line)
-        await tx.appendLine({ ...line, n: 2 })
-      }),
-    ).rejects.toThrow('spent must be unique')
-    expect(await store.transaction((tx) => tx.lineCount())).toBe(0)
-  })
-})
-
-describe('quorum of 3 out of 4', () => {
-  let net: Network
-  let members: Guardian[]
-  let group: Group
-  let alice: Wallet
-  let bob: Wallet
-
-  beforeEach(async () => {
-    net = new Network()
-    members = await guardians(net, ['a', 'b', 'c', 'd'])
-    group = groupOf(members, 3)
-    alice = newWallet()
-    bob = newWallet()
-  })
-
-  it('stores the certificate on every member', async () => {
-    const token = await mint(net, alice, group)
-    expect(token.signatures.guardians).toHaveLength(4)
-    for (const member of members) {
-      const copy = await member.tokenHead(token.state.token_id)
-      expect(copy.here).toBe(true)
-    }
-  })
-
-  it('survives one member down, which catches up afterwards', async () => {
-    const token = await mint(net, alice, group)
-    const late = members[3] as Guardian
-    net.down.add(late.url)
-    const final = await transfer(net, token, alice, bob)
-    expect(final.signatures.guardians).toHaveLength(3)
-
-    net.down.delete(late.url)
-    const charlie = newWallet()
-    const third = await transfer(net, final, bob, charlie)
-    expect(third.signatures.guardians).toHaveLength(4)
-    const types = (await late.lines(1, 10)).map((line) => line.type)
-    expect(types).toEqual(['creation', 'catch_up', 'transfer'])
-  })
-
-  it('stops with two members down, without losing anything', async () => {
-    const token = await mint(net, alice, group)
-    net.down.add('https://c.test').add('https://d.test')
-    await expect(transfer(net, token, alice, bob)).rejects.toThrow(QuorumError)
-    net.down.clear()
-    await expect(transfer(net, token, alice, bob)).resolves.toBeDefined()
-  })
-
-  it('counts a member it cannot resolve as a failure', async () => {
-    const token = await mint(net, alice, group)
-    const directory = (url: string) => {
-      if (url === 'https://d.test') throw new Error('no route')
-      return net.directory(url)
-    }
-    const { keys, threshold } = directAddress(bob)
-    const proposal = await composeProposal(token, {
-      signers: signersForState(alice, token.state),
-      recipient: { owner: { keys, threshold } },
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const accepted = await acceptProposal(proposal, signersForState(bob, proposal.state))
-    await expect(commit(directory, accepted, token)).resolves.toBeDefined()
-  })
-
-  it('refuses a certificate with too few votes', async () => {
-    const token = await mint(net, alice, group)
-    const votes = token.signatures.guardians?.slice(0, 2) ?? []
-    const weak = { ...token, signatures: { ...token.signatures, guardians: votes } }
-    await expect(
-      (members[0] as Guardian).certify({ token: weak, previous: null }),
-    ).rejects.toMatchObject({ code: 'INVALID_SIGNATURE' })
-  })
-
-  it('reports the refusal that blocks the quorum', async () => {
-    const token = await mint(net, alice, group)
-    await transfer(net, token, alice, bob)
-    await expect(transfer(net, token, alice, newWallet())).rejects.toMatchObject({
-      code: 'STATE_ALREADY_SPENT',
-    })
-  })
-
-  it('does not count one member twice', async () => {
-    const token = await mint(net, alice, group)
-    const [first] = token.signatures.guardians ?? []
-    const padded = [first, first, first] as NonNullable<Token['signatures']['guardians']>
-    const forged = { ...token, signatures: { ...token.signatures, guardians: padded } }
-    expect(() => validateToken(forged, { stage: 'final' })).toThrow('guardian quorum missing')
-  })
-})
-
-describe('changing group', () => {
-  let net: Network
-  let x: Guardian
-  let y: Guardian
-  let token: Token
-  let alice: Wallet
-
-  beforeEach(async () => {
-    net = new Network()
-    ;[x, y] = (await guardians(net, ['x', 'y'])) as [Guardian, Guardian]
-    alice = newWallet()
-    token = await mint(net, alice, groupOf([x], 1))
-  })
-
-  const move =
-    (wallet = alice, guardian = groupOf([y], 1)) =>
-    async (from: Token) => {
-      const next = await composeProposal(from, {
-        signers: signersForState(wallet, from.state),
-        guardian,
-        expiresIn: 3600,
-        now: net.now,
-      })
-      return commit(net.directory, next, from)
-    }
-
-  it('hands over: departure, arrival, then the old guardian refuses', async () => {
-    const moved = await move()(token)
-    expect((await x.lines(1, 5)).at(-1)).toMatchObject({ type: 'departure' })
-    expect((await y.lines(1, 5)).at(-1)).toMatchObject({
-      type: 'arrival',
-      origin: { guardian: x.key, line: 2 },
-    })
-    expect(await x.tokenHead(token.state.token_id)).toMatchObject({ here: false })
-
-    const next = await composeProposal(moved, {
-      signers: signersForState(alice, moved.state),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    await expect(x.validate(next)).rejects.toMatchObject({ code: 'TOKEN_MOVED' })
-    await expect(commit(net.directory, next, moved)).resolves.toBeDefined()
-  })
-
-  it('combines a transfer and a change of group', async () => {
-    const bob = newWallet()
-    const final = await transfer(net, token, alice, bob, groupOf([y], 1))
-    expect(final.state.owner).toEqual(owner(bob).owner)
-    expect(await y.tokenHead(token.state.token_id)).toMatchObject({ here: true })
-  })
-
-  it('returns to a former guardian', async () => {
-    const away = await move()(token)
-    const back = await move(alice, groupOf([x], 1))(away)
-    expect(await x.tokenHead(back.state.token_id)).toMatchObject({ here: true })
-    expect((await x.lines(1, 9)).map((l) => l.type)).toEqual(['creation', 'departure', 'arrival'])
-  })
-
-  it('needs the entry quorum of the new group', async () => {
-    const next = await composeProposal(token, {
-      signers: signersForState(alice, token.state),
-      guardian: groupOf([y], 1),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    await expect(x.validate(next)).rejects.toMatchObject({ code: 'INVALID_SIGNATURE' })
-  })
-
-  it('refuses bad entries', async () => {
-    const stay = await composeProposal(token, {
-      signers: signersForState(alice, token.state),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    await expect(y.enter({ proposal: stay, previous: token })).rejects.toMatchObject({
-      code: 'INVALID_FORMAT',
-    })
-    await expect(x.enter({ proposal: stay, previous: token })).rejects.toMatchObject({
-      code: 'INVALID_FORMAT',
-    })
-    await expect(y.enter({ proposal: stay })).rejects.toMatchObject({ code: 'INVALID_FORMAT' })
-    y.setPolicy({ creators: null, origins: [], maxProposalSeconds: 3600 })
-    await expect(move()(token)).rejects.toMatchObject({ code: 'POLICY_REFUSED' })
-  })
-
-  it('respects allowed_guardians', async () => {
-    const limited = await mint(net, alice, groupOf([x], 1), { allowed_guardians: [x.key] })
-    await expect(move()(limited)).rejects.toMatchObject({ code: 'GUARDIAN_NOT_ALLOWED' })
-  })
-
-  it('refuses an old certificate and an unrelated guardian', async () => {
-    const moved = await move()(token)
-    await expect(y.certify({ token: token, previous: null })).rejects.toMatchObject({
-      code: 'INVALID_FORMAT',
-    })
-    expect(await x.certify({ token: token, previous: null })).toEqual({ line: null })
-    await expect(
-      y.certify({
-        token: {
-          ...moved,
-          signatures: { ...moved.signatures },
-        },
-        previous: null,
-      }),
-    ).resolves.toEqual({ line: null })
-  })
-})
-
-describe('owner of several keys', () => {
-  it('needs its threshold, and survives a lost key', async () => {
-    const net = new Network()
-    const [x] = (await guardians(net, ['x'])) as [Guardian]
-    const group = groupOf([x], 1)
-    const shared = newWallet(3, 2)
-    const token = await mint(net, shared, group)
-    const signers = signersForState(shared, token.state)
-    expect(signers).toHaveLength(3)
-
-    const alone = await composeProposal(token, {
-      signers: signers.slice(0, 1),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    await expect(commit(net.directory, alone, token)).rejects.toMatchObject({
-      code: 'INVALID_SIGNATURE',
-    })
-
-    const replacement = newWallet(3, 2)
-    const { keys, threshold } = directAddress(replacement)
-    const rekey = await composeProposal(token, {
-      signers: signers.slice(1),
-      recipient: { owner: { keys, threshold } },
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const accepted = await acceptProposal(
-      rekey,
-      signersForState(replacement, rekey.state).slice(0, 2),
-    )
-    const final = await commit(net.directory, accepted, token)
-    expect(final.state.owner.keys).toEqual(keys)
-  })
-
-  it('counts one key once', async () => {
-    const net = new Network()
-    const [x] = (await guardians(net, ['x'])) as [Guardian]
-    const shared = newWallet(2, 2)
-    const token = await mint(net, shared, groupOf([x], 1))
-    const [signer] = signersForState(shared, token.state)
-    const next = await composeProposal(token, {
-      signers: [signer, signer] as ReturnType<typeof signersForState>,
-      expiresIn: 3600,
-      now: net.now,
-    })
-    await expect(commit(net.directory, next, token)).rejects.toMatchObject({
-      code: 'INVALID_SIGNATURE',
-    })
-  })
-})
-
-describe('createToken', () => {
-  it('reports a missing quorum', async () => {
-    const net = new Network()
-    const group = groupOf(await guardians(net, ['a', 'b', 'c', 'd']), 3)
-    const signer = generateSigner()
-    const token = await composeToken({
-      owner: soleOwner(signer.key),
-      signers: [signer],
-      subject: 'x',
-      guardian: group,
-    })
-    net.down.add('https://a.test').add('https://b.test')
-    await expect(createToken(net.directory, token)).rejects.toThrow('2 of 3 required answers')
+    expect(other.members).toHaveLength(1)
+    const again = { ...minted.transition, guardians: [] }
+    const replayed = await net.node('a').guardian.validate({ transition: again, previous: [] })
+    expect(replayed.guardians).toHaveLength(1)
   })
 })

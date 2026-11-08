@@ -1,18 +1,32 @@
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
-const scenarios = ['agility', 'guardian', 'recovery', 'rotation', 'stealth', 'token', 'witness']
+const scenarios = [
+  'agility',
+  'attacks',
+  'client-recovery',
+  'evidence',
+  'guardian',
+  'integrity',
+  'ledger-check',
+  'lineage',
+  'operations',
+  'party',
+  'policy',
+  'recovery',
+  'witness',
+]
 
 /**
- * Runs the scenarios of `core`, unchanged, against real HTTP servers on real storage:
- * only the network they run on is swapped.
+ * Runs the scenarios of `core`, unchanged, against real HTTP servers: only the network they
+ * run on is swapped.
  */
 export default defineConfig({
   root: fileURLToPath(new URL('..', import.meta.url)),
   resolve: {
     alias: [
       {
-        find: /^\.\/network\.ts$/,
+        find: /^\.\/support\/network\.ts$/,
         replacement: fileURLToPath(new URL('test/http-network.ts', import.meta.url)),
       },
     ],

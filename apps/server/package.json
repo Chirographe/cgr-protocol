@@ -16,7 +16,8 @@
   "dependencies": {
     "@chirographe/server": "workspace:*",
     "@chirographe/storage-sqlite": "workspace:*",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "@chirographe/semaphore": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

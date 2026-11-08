@@ -1,15 +1,17 @@
 import type { Key } from '../crypto/keys.ts'
 
+/** What a guardian accepts beyond the protocol (section 8). */
 export interface Policy {
-  /** Keys allowed to create tokens here. `null` means anyone. */
-  creators: Key[] | null
+  /** Keys allowed in the issuer of a new token here. `null` means anyone. */
+  issuers: Key[] | null
   /** Guardians tokens may arrive from. `null` means any. */
   origins: Key[] | null
-  maxProposalSeconds: number
+  /** Longest `valid_until` accepted, from now. */
+  maxValiditySeconds: number
 }
 
 export const OPEN_POLICY: Policy = {
-  creators: null,
+  issuers: null,
   origins: null,
-  maxProposalSeconds: 7 * 24 * 3600,
+  maxValiditySeconds: 7 * 24 * 3600,
 }

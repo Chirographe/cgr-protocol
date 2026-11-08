@@ -1,170 +1,228 @@
 import { describe, expect, it } from 'vitest'
 import {
   HttpGuardian,
-  acceptProposal,
+  ProtocolError,
+  bodyHash,
   checkLedger,
+  checkVoteLine,
+  hashLine,
+  ledgerRoot,
   commit,
-  composeProposal,
-  deriveOwner,
-  finalizeRecovery,
+  composeTransition,
+  encodeBase64Url,
   generateSigner,
-  hashOf,
+  generateWallet,
   hashToBytes,
+  holdsAnyKey,
   isKnownKey,
-  inspectEnvelope,
-  isSoleOwner,
-  owns,
-  requestRecovery,
+  isOwnLock,
+  p256,
+  payTo,
+  predicates,
   scanOwners,
-  signersFor,
-  signersForState,
-  validateToken,
+  signTransition,
+  spendOf,
+  validateTransition,
+  continueOutput,
   walletAddress,
-  type Guardian,
+  withVotes,
   type GuardianApi,
-  type Token,
-  type Wallet,
+  type Transition,
 } from '../src/index.ts'
-import { encodeBase64Url } from '../src/encoding/base64url.ts'
-import { Network, directAddress, groupOf, guardians, mint, newWallet } from './network.ts'
+import { Network } from './support/network.ts'
+import { heldAt, mint, move, people } from './support/tokens.ts'
+
+const { sig, keys } = predicates
+const { alice, bob, mallory } = people('alice', 'bob', 'mallory')
+
+const refused = (promise: Promise<unknown>, code: string) =>
+  expect(promise).rejects.toSatisfy((e) => e instanceof ProtocolError && e.code === code)
 
 describe('a server that a wallet logs in to', () => {
-  it('cannot turn a login into a signature on a transfer', async () => {
+  it('cannot turn a login into evidence for a transition', async () => {
     const net = new Network()
-    const [x] = (await guardians(net, ['x'])) as [Guardian]
-    const victim = newWallet()
-    const token = await mint(net, victim, groupOf([x], 1))
-
-    const thief = newWallet()
-    const { keys, threshold } = directAddress(thief)
-    const unsigned = await composeProposal(token, {
-      signers: [generateSigner()],
-      recipient: { owner: { keys, threshold } },
-      expiresIn: 3600,
-      now: net.now,
+    const group = await net.group(['x'], 1)
+    const minted = await mint(net, { group, owner: alice! })
+    const theft = composeTransition({
+      group,
+      inputs: [spendOf(minted.output)],
+      outputs: [continueOutput(minted.output, { lock: sig(mallory!.key) })],
     })
-
-    // The rogue server sends the hash of a state that gives the token away, as a challenge.
     let signature = ''
     const rogue = new HttpGuardian('https://rogue.test', {
       fetch: (url, init) => {
         if (url.endsWith('/auth/challenge')) {
-          const challenge = encodeBase64Url(hashToBytes(hashOf(unsigned.state)))
+          const challenge = encodeBase64Url(hashToBytes(bodyHash(theft)))
           return Promise.resolve(new Response(JSON.stringify({ challenge })))
         }
         ;({ signature } = JSON.parse(init.body as string) as { signature: string })
         return Promise.resolve(new Response(JSON.stringify({ session: 'x' })))
       },
     })
-    const [signer] = signersForState(victim, token.state)
-    await rogue.authenticate(signer as NonNullable<typeof signer>)
-    expect(signature).not.toBe('')
-
-    const forged: Token = {
-      ...unsigned,
-      signatures: { senders: [{ type: 'raw', key: signer?.key as string, signature }] },
+    await rogue.authenticate(alice!)
+    const forged: Transition = {
+      ...theft,
+      evidence: {
+        signatures: [{ type: 'raw', key: alice!.key, signature }],
+        preimages: [],
+        proofs: [],
+      },
     }
-    expect(() => validateToken(forged, { stage: 'proposed', previous: token.state })).toThrow()
-    const complete = await acceptProposal(forged, signersFor(thief, { keys, threshold }))
-    await expect(commit(net.directory, complete, token)).rejects.toMatchObject({
-      code: 'INVALID_SIGNATURE',
-    })
+    await refused(commit(net.directory, forged, [minted.transition]), 'NOT_AUTHORIZED')
   })
 })
 
-describe('a token after a recovery', () => {
-  const setup = async () => {
+describe('a forger', () => {
+  it('cannot pass off votes of keys outside the group', async () => {
     const net = new Network()
-    const [x, y] = (await guardians(net, ['x', 'y'])) as [Guardian, Guardian]
-    const owner = newWallet()
-    const token = await mint(net, owner, groupOf([x], 1), {
-      recovery: { group: groupOf([y], 1), delay_seconds: 60 },
-    })
-    const signers = signersForState(owner, token.state)
-    const { proposal } = await requestRecovery(net.directory, token, signers)
-    return { net, owner, token, proposal }
-  }
-
-  const offer = async (net: Network, owner: Wallet, previous: Token, bob: Wallet) => {
-    const proposal = await composeProposal(previous, {
-      signers: signersForState(owner, previous.state),
-      recipient: deriveOwner(directAddress(bob)),
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const from = directAddress(owner)
-    const checks = await inspectEnvelope({ from, proposal, previous }, bob, {
-      directory: net.directory,
-      trustOf: () => 'trusted',
-      lastSeen: new Map(),
-      now: net.now,
-    })
-    return checks.find((check) => check.name === 'no-recovery')?.ok
-  }
-
-  it('can change hands again once the recovery is over', async () => {
-    const { net, owner, token, proposal } = await setup()
-    net.advance(61)
-    const taken = await finalizeRecovery(net.directory, proposal, token)
-    expect(await offer(net, owner, taken, newWallet())).toBe(true)
+    const group = await net.group(['x', 'y', 'z', 'w'], 3)
+    const minted = await mint(net, { group, owner: alice! })
+    const fake = await net.group(['f'], 1)
+    const proposal = await move(minted, [alice!], { lock: sig(bob!.key) })
+    const foreignVotes =
+      (await net
+        .directory(fake.members[0]!.url)
+        .validate({ transition: proposal, previous: [] })
+        .catch(() => null)) ?? proposal
+    const forged = withVotes(proposal, foreignVotes.guardians ?? [])
+    await refused(
+      net
+        .directory(group.members[0]!.url)
+        .certify({ transition: forged, previous: [minted.transition] }),
+      'NOT_AUTHORIZED',
+    )
   })
 
-  it('stays refused in its version from before the recovery', async () => {
-    const { net, owner, token, proposal } = await setup()
-    net.advance(61)
-    await finalizeRecovery(net.directory, proposal, token)
-    expect(await offer(net, owner, token, newWallet())).toBe(false)
+  it('cannot start a token in the name of an issuer', async () => {
+    const net = new Network()
+    const group = await net.group(['x'], 1)
+    const registry = generateSigner()
+    await refused(
+      mint(net, { group, owner: mallory!, issuer: mallory!, issuerPredicate: sig(registry.key) }),
+      'NOT_AUTHORIZED',
+    )
   })
 
-  it('stays refused while the recovery is open', async () => {
-    const { net, owner, token } = await setup()
-    expect(await offer(net, owner, token, newWallet())).toBe(false)
+  it('cannot start an existing token again to escape its covenant', async () => {
+    const net = new Network()
+    const group = await net.group(['x'], 1)
+    const minted = await mint(net, { group, owner: alice!, covenant: [{ accept: true }] })
+    const restart = composeTransition({
+      group,
+      outputs: [{ ...minted.output, lock: sig(mallory!.key) }],
+    })
+    await refused(validateTransition(restart, [], 'authorized', net.now), 'NOT_AUTHORIZED')
+    await refused(
+      commit(net.directory, await signTransition(restart, [alice!]), []),
+      'ALREADY_SPENT',
+    )
+  })
+
+  it('cannot take a token over from a group that is not its recovery group', async () => {
+    const net = new Network()
+    const group = await net.group(['x'], 1)
+    const rescue = await net.group(['r'], 1)
+    const other = await net.group(['o'], 1)
+    const minted = await mint(net, {
+      group,
+      owner: alice!,
+      recovery: { group: rescue, delay_seconds: 1 },
+    })
+    const grab = await move(minted, [alice!], { group: other }, other)
+    await refused(
+      validateTransition(grab, [minted.transition], 'authorized', net.now),
+      'NOT_AUTHORIZED',
+    )
+    await refused(commit(net.directory, grab, [minted.transition]), 'UNKNOWN')
+  })
+
+  it('cannot bring a second copy of a token into the group that holds it', async () => {
+    const net = new Network()
+    const group = await net.group(['x'], 1)
+    const elsewhere = await net.group(['e'], 1)
+    const minted = await mint(net, { group, owner: alice! })
+    const copy = heldAt({
+      ...minted.transition,
+      body: { ...minted.transition.body, group: elsewhere },
+    })
+    const back = await move(copy, [alice!], { group }, elsewhere)
+    await refused(commit(net.directory, back, [copy.transition]), 'NOT_AUTHORIZED')
   })
 })
 
 describe('a recipient', () => {
-  it('does not take a token that the sender still co-owns for its own', () => {
-    const bob = newWallet()
-    const sender = newWallet()
-    const shared = {
-      keys: [...directAddress(bob).keys, ...directAddress(sender).keys],
-      threshold: 1,
-    }
-    expect(owns(bob, shared)).toBe(true)
-    expect(isSoleOwner(bob, shared)).toBe(false)
+  it('does not take a lock that another key can open for its own', () => {
+    const wallet = generateWallet(p256)
+    const { locks, ephemeral } = payTo([walletAddress(wallet, 'https://relay.test')])
+    const lock = locks[0]!
+    expect(isOwnLock(wallet, lock, ephemeral)).toBe(true)
+    const shared = predicates.any(lock, sig(mallory!.key))
+    expect(isOwnLock(wallet, shared, ephemeral)).toBe(false)
   })
 
   it('does not accept a lower threshold than its own', () => {
-    const bob = newWallet(2, 2)
-    const { keys } = directAddress(bob)
-    expect(isSoleOwner(bob, { keys, threshold: 2 })).toBe(true)
-    expect(isSoleOwner(bob, { keys, threshold: 1 })).toBe(false)
-  })
-
-  it('recognizes what is really its own, stealth included', () => {
-    const bob = newWallet()
-    const { owner, ephemeral } = deriveOwner(walletAddress(bob, 'https://relay.test', true))
-    expect(isSoleOwner(bob, owner, ephemeral)).toBe(true)
-    const { keys, threshold } = directAddress(bob)
-    expect(isSoleOwner(bob, { keys, threshold })).toBe(true)
+    const wallet = generateWallet(p256, 2, 2)
+    const address = walletAddress(wallet, 'https://relay.test', false)
+    expect(isOwnLock(wallet, keys(1, address.keys))).toBe(false)
+    expect(isOwnLock(wallet, keys(2, address.keys))).toBe(true)
   })
 })
 
 describe('a wallet', () => {
-  const stranger = () => newWallet()
-
   it('survives a malformed ephemeral in the list of owners', async () => {
-    const wallet = stranger()
-    const owner = { keys: directAddress(wallet).keys, threshold: 1 }
+    const wallet = generateWallet(p256)
+    const address = walletAddress(wallet, 'https://relay.test', false)
     const guardian = {
-      owners: () => Promise.resolve([{ n: 1, ephemeral: 'p256:AAAA', owner }]),
+      owners: () => Promise.resolve([{ n: 1, ephemeral: 'p256:AAAA', keys: ['p256:BBBB'] }]),
     } as unknown as GuardianApi
-    await expect(scanOwners(guardian, wallet)).resolves.toEqual([])
+    await expect(scanOwners(guardian, (k, e) => holdsAnyKey(wallet, k, e))).resolves.toEqual([])
+    expect(holdsAnyKey(wallet, address.keys, 'p256:AAAA')).toBe(true)
+  })
+
+  it('does not take a notice line for the record of a transition', async () => {
+    const hash = bodyHash(
+      composeTransition({ group: { members: [], threshold: 1 } as never, outputs: [] }),
+    )
+    const notice = {
+      n: 1,
+      type: 'notice' as const,
+      hash,
+      spent: [],
+      date: '2026-11-06T12:00:00.000Z',
+    }
+    const head = {
+      n: 1,
+      root: ledgerRoot([hashLine(notice)]),
+      date: notice.date,
+      signature: 'AAAA',
+    }
+    const guardian = {
+      lines: () => Promise.resolve([notice]),
+      inclusionProof: () => Promise.resolve([]),
+    } as unknown as GuardianApi
+    const vote = {
+      type: 'raw' as const,
+      key: alice!.key,
+      signature: 'AAAA',
+      line: 1,
+      line_hash: hashLine(notice),
+    }
+    expect(await checkVoteLine(guardian, hash, vote, head)).toBe(false)
+    const recorded = { ...notice, type: 'transition' as const }
+    const honest = {
+      lines: () => Promise.resolve([recorded]),
+      inclusionProof: () => Promise.resolve([]),
+    } as unknown as GuardianApi
+    const fair = { ...vote, line_hash: hashLine(recorded) }
+    expect(
+      await checkVoteLine(honest, hash, fair, { ...head, root: ledgerRoot([hashLine(recorded)]) }),
+    ).toBe(true)
   })
 
   it('treats any explicit lock of a head as a lock', async () => {
     const net = new Network()
-    const [x] = (await guardians(net, ['x'])) as [Guardian]
+    await net.group(['x'], 1)
+    const x = net.node('x').guardian
     const head = await x.head()
     const lying = { head: () => Promise.resolve({ ...head, locked: false }) } as GuardianApi
     expect(await checkLedger(lying, x.key, null)).toMatchObject({ ok: false })
@@ -184,7 +242,6 @@ describe('keys', () => {
     const valid = generateSigner().key
     const last = valid.at(-1) as string
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
-    // A last character only carries part of its bits: the next ones decode to the same bytes.
     const alias = `${valid.slice(0, -1)}${alphabet[alphabet.indexOf(last) + 1] ?? 'A'}`
     expect(isKnownKey(alias)).toBe(false)
   })

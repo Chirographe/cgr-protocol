@@ -17,7 +17,6 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@chirographe/storage-sqlite": "workspace:*",
     "@types/node": "^24.0.0",
     "@vitest/coverage-v8": "^4.0.0",
     "typescript": "^5.6.0",

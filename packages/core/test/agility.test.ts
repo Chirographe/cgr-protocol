@@ -1,23 +1,16 @@
 import { ed25519 } from '@noble/curves/ed25519.js'
 import { describe, expect, it } from 'vitest'
 import {
-  acceptProposal,
-  commit,
-  composeProposal,
-  composeToken,
-  createToken,
-  formatKey,
   generateSigner,
   isKnownKey,
-  p256,
-  parseToken,
+  payTo,
+  predicates,
   registerAlgorithm,
-  soleOwner,
-  stealthAlgorithmOf,
-  validateToken,
+  formatKey,
   type SignatureAlgorithm,
 } from '../src/index.ts'
-import { Network, groupOf } from './network.ts'
+import { Network } from './support/network.ts'
+import { mint, transfer } from './support/tokens.ts'
 
 /** A second scheme, written in one place: nothing else in the library changes. */
 const ed: SignatureAlgorithm = {
@@ -37,63 +30,27 @@ describe('algorithm agility', () => {
     expect(isKnownKey(key)).toBe(true)
   })
 
-  it('runs the whole protocol on another algorithm', async () => {
+  it('runs owners and guardians on another algorithm, side by side with p256', async () => {
     registerAlgorithm(ed)
     const net = new Network()
-    const x = await net.add('x', ed)
-    const alice = generateSigner(ed)
-    const bob = generateSigner(ed)
-    expect(x.key.startsWith('ed25519:')).toBe(true)
-
-    const token = await createToken(
-      net.directory,
-      await composeToken({
-        owner: soleOwner(alice.key),
-        signers: [alice],
-        subject: 'Parcel 42',
-        guardian: groupOf([x], 1),
-        now: net.now,
-      }),
-    )
-    const proposal = await composeProposal(token, {
-      signers: [alice],
-      recipient: { owner: soleOwner(bob.key) },
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const final = await commit(net.directory, await acceptProposal(proposal, [bob]), token)
-    expect(() => validateToken(parseToken(final), { stage: 'final' })).not.toThrow()
-  })
-
-  it('moves a token and a guardian to a new algorithm', async () => {
-    registerAlgorithm(ed)
-    const net = new Network()
-    const x = await net.add('x', p256)
-    const alice = generateSigner(p256)
-    const token = await createToken(
-      net.directory,
-      await composeToken({
-        owner: soleOwner(alice.key),
-        signers: [alice],
-        subject: 'x',
-        guardian: groupOf([x], 1),
-        now: net.now,
-      }),
-    )
-    const future = generateSigner(ed)
-    const proposal = await composeProposal(token, {
-      signers: [alice],
-      recipient: { owner: soleOwner(future.key) },
-      expiresIn: 3600,
-      now: net.now,
-    })
-    const final = await commit(net.directory, await acceptProposal(proposal, [future]), token)
-    expect(final.state.owner.keys[0]?.startsWith('ed25519:')).toBe(true)
+    const guardians = [await net.add('e', ed), await net.add('p')]
+    const group = { members: guardians.map((g) => ({ key: g.key, url: g.url })), threshold: 2 }
+    const [alice, bob] = [generateSigner(ed), generateSigner()]
+    const minted = await mint(net, { group, owner: alice })
+    const moved = await transfer(net, minted, [alice], { lock: predicates.sig(bob.key) })
+    expect(moved.output.sequence).toBe(1)
   })
 
   it('refuses stealth on an algorithm that lacks it', () => {
     registerAlgorithm(ed)
     const key = formatKey(ed, ed.publicKey(ed.generateSecret()))
-    expect(() => stealthAlgorithmOf(key)).toThrow('no stealth support')
+    const address = {
+      scan: key,
+      keys: [key],
+      threshold: 1,
+      relay: 'https://relay.test',
+      stealth: true,
+    }
+    expect(() => payTo([address])).toThrow()
   })
 })

@@ -1,47 +1,28 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach } from 'vitest'
+import { afterAll } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import {
   Guardian,
   Mailboxes,
+  MemoryGuardianStore,
+  MemoryMailboxStore,
   httpDirectory,
   memoryKeyring,
-  type GuardianStorage,
   type SignatureAlgorithm,
 } from '@chirographe/core'
-import { openGuardianStorage } from '@chirographe/storage-sqlite'
+import { Network as MemoryNetwork } from '../../core/test/support/network.ts'
 import { createGuardianServer } from '../src/index.ts'
-import { Network as MemoryNetwork } from '../../core/test/network.ts'
+import { LOCALHOST } from './support.ts'
 
-export {
-  directAddress,
-  groupOf,
-  guardians,
-  mint,
-  newWallet,
-  soleOwner,
-  stealthAddress,
-} from '../../core/test/network.ts'
+export { groupOf, type Node } from '../../core/test/support/network.ts'
 
-interface Running {
-  app: FastifyInstance
-  storage: GuardianStorage
-  folder: string
-}
+const running: FastifyInstance[] = []
 
-const running: Running[] = []
-
-afterEach(async () => {
-  for (const { app, storage, folder } of running.splice(0)) {
-    await app.close()
-    await storage.close()
-    rmSync(folder, { recursive: true, force: true })
-  }
+// Some scenarios build their network once per file.
+afterAll(async () => {
+  await Promise.all(running.splice(0).map((app) => app.close()))
 })
 
-/** Same network as in `core`, with every call going through a socket, HTTP and SQLite. */
+/** The network of `core` tests, with every client call going through a socket and HTTP. */
 export class Network extends MemoryNetwork {
   private readonly addresses = new Map<string, string>()
 
@@ -54,21 +35,27 @@ export class Network extends MemoryNetwork {
     },
   })
 
+  /** Serves the guardian the scenario holds at this URL, even when it swaps it. */
+  private served(url: string): Guardian {
+    return new Proxy({} as Guardian, {
+      get: (_target, property) => {
+        const { guardian } = this.nodes.get(url)!
+        const value: unknown = Reflect.get(guardian, property)
+        return typeof value === 'function' ? (value as () => unknown).bind(guardian) : value
+      },
+    })
+  }
+
   override async add(name: string, algorithm?: SignatureAlgorithm): Promise<Guardian> {
     const url = `https://${name}.test`
-    const folder = mkdtempSync(join(tmpdir(), 'chirographe-'))
-    const storage = openGuardianStorage(folder)
-    const guardian = await Guardian.open({
-      name,
-      url,
-      store: storage.guardian,
-      keyring: memoryKeyring(algorithm),
-      clock: this.clock,
-    })
-    const mailboxes = new Mailboxes(storage.mailboxes, this.clock)
-    const app = await createGuardianServer({ guardian, mailboxes })
-    this.addresses.set(url, await app.listen({ host: '127.0.0.1', port: 0 }))
-    running.push({ app, storage, folder })
+    const store = new MemoryGuardianStore()
+    const keyring = memoryKeyring(algorithm)
+    const guardian = await Guardian.open({ name, url, store, keyring, clock: this.clock })
+    this.nodes.set(url, { guardian, store })
+    const mailboxes = new Mailboxes(new MemoryMailboxStore(), this.clock)
+    const app = await createGuardianServer({ guardian: this.served(url), mailboxes })
+    running.push(app)
+    this.addresses.set(url, await app.listen({ host: LOCALHOST, port: 0 }))
     return guardian
   }
 }
